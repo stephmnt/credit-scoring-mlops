@@ -9,3 +9,11 @@
 ```shell
 mlflow server
 ```
+
+```shell
+mlflow models serve -m "models:/credit_scoring_model/Staging" -p 5001 --no-conda
+```
+
+```shell
+mlflow ui --backend-store-uri "file:${PWD}/mlruns" --port 5000
+```
