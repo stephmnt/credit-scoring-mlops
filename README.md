@@ -7,7 +7,7 @@
 ## Lancer MLFlow
 
 Le notebook est configure pour utiliser un serveur MLflow local (`http://127.0.0.1:5000`).
-Pour voir vos runs et creer l'experiment, demarrez le serveur avec le meme backend :
+Pour voir les runs et creer l'experiment, demarrer le serveur avec le meme backend :
 
 ```shell
 mlflow server \
@@ -17,7 +17,7 @@ mlflow server \
   --default-artifact-root "file:${PWD}/mlruns"
 ```
 
-Si vous preferez seulement l'interface (sans API), vous pouvez lancer :
+Seulement l'interface (sans API), lancer :
 
 ```shell
 mlflow ui --backend-store-uri "file:${PWD}/mlruns" --port 5000
@@ -29,11 +29,7 @@ Pour tester le serving du modele en staging :
 mlflow models serve -m "models:/credit_scoring_model/Staging" -p 5001 --no-conda
 ```
 
-## Rapport de conformite Mission 1 (Notebook)
-
-Ce rapport decrit l'etat du notebook `P6_MANET_Stephane_notebook_modélisation.ipynb`
-au regard de `ressources/mission_1.md` et `ressources/correction_1.md`.
-Il est volontairement pedagogue pour un lecteur debutant.
+## Contenu de la release
 
 ### Ce qui est conforme (livrables couverts)
 
@@ -48,24 +44,7 @@ Il est volontairement pedagogue pour un lecteur debutant.
 - **MLOps (MLflow)** : tracking des params / metriques (dont `custom_score` et `best_threshold`), tags,
   registry et passage en "Staging".
 
-### Ce qui est partiellement couvert
-
-- **Choix du meilleur modele** : le registre MLflow choisit le meilleur run par `custom_score`,
-  mais la narration "Best Final Model = HGB" n'est pas toujours alignee avec ce critere.
-- **UI/serving MLflow** : les instructions sont ecrites mais pas de preuve d'execution (screenshot / test).
-
-### Ce qui reste a faire (pour un livrable complet)
-
-- Aligner le modele "final" choisi dans le notebook avec le meilleur run MLflow.
-- Produire un screenshot de l'interface MLflow et un test de serving.
-
-### Nettoyage effectue
-
-- **Erreur d'execution** supprimee des outputs.
-- **Bloc ngrok / token** retire.
-- **Notes de travail** (TODO) retirees.
-- **Cellules de test isolees** supprimees.
-- **Imports non utilises** supprimes.
+![](screen-mlflow.png)
 
 ### Glossaire rapide (pour debutant)
 
