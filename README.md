@@ -31,8 +31,6 @@ mlflow models serve -m "models:/credit_scoring_model/Staging" -p 5001 --no-conda
 
 ## Contenu de la release
 
-### Ce qui est conforme (livrables couverts)
-
 - **Preparation + pipeline** : nettoyage / preparation, encodage, imputation et pipeline d'entrainement presentes.
 - **Gestion du desequilibre** : un sous-echantillonnage est applique sur le jeu d'entrainement final.
 - **Comparaison multi-modeles** : baseline, Naive Bayes, Logistic Regression, Decision Tree, Random Forest,
@@ -46,7 +44,7 @@ mlflow models serve -m "models:/credit_scoring_model/Staging" -p 5001 --no-conda
 
 ![](screen-mlflow.png)
 
-### Glossaire rapide (pour debutant)
+## Glossaire rapide (pour debutant)
 
 - **custom_score** : metrique metier qui penalise plus fortement les faux negatifs que les faux positifs.
 - **Seuil optimal** : probabilite qui sert a transformer un score en classe 0/1.
