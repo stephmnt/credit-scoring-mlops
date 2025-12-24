@@ -35,6 +35,26 @@ L'API attend un payload JSON avec une cle `data`. La valeur peut etre un objet
 unique (un client) ou une liste d'objets (plusieurs clients). La liste des
 features requises est disponible via l'endpoint `/features`.
 
+### Environnement Poetry (recommande)
+
+Le fichier `pyproject.toml` fixe des versions compatibles pour un stack recent
+(`numpy>=2`, `pyarrow>=15`, `scikit-learn>=1.6`). L'environnement vise Python
+3.11.
+
+```shell
+poetry env use 3.11
+poetry install
+poetry run pytest -q
+poetry run uvicorn app.main:app --reload
+```
+
+Important : le modele `HistGB_final_model.pkl` doit etre regenere avec la
+nouvelle version de scikit-learn (re-execution de
+`P6_MANET_Stephane_notebook_modélisation.ipynb`, cellule de sauvegarde pickle).
+
+Note : `requirements.txt` est un snapshot historique. La reference pour un
+environnement stable est maintenant `pyproject.toml`.
+
 ### Exemple d'input (schema + valeurs)
 
 Schema :
@@ -140,7 +160,7 @@ curl -s -X POST "http://127.0.0.1:8000/predict?threshold=0.5" \
 - **MLOps (MLflow)** : tracking des params / metriques (dont `custom_score` et `best_threshold`), tags,
   registry et passage en "Staging".
 
-![](screen-mlflow.png)
+![Screenshot MLFlow](screen-mlflow.png)
 
 ## Glossaire rapide
 

@@ -64,6 +64,7 @@ class PreprocessorArtifacts:
     numeric_medians: dict[str, float]
     categorical_columns: list[str]
     outlier_maxes: dict[str, float]
+    numeric_ranges: dict[str, tuple[float, float]]
     features_to_scaled: list[str]
     scaler: MinMaxScaler
     raw_feature_columns: list[str]
@@ -114,6 +115,11 @@ def build_preprocessor(data_path: Path) -> PreprocessorArtifacts:
     for col, max_val in outlier_maxes.items():
         df = df[df[col] != max_val]
 
+    numeric_ranges = {}
+    for col in numeric_cols:
+        if col in df.columns:
+            numeric_ranges[col] = (float(df[col].min()), float(df[col].max()))
+
     df_hot = pd.get_dummies(df, columns=categorical_columns)
     features_to_scaled = [col for col in df_hot.columns if col not in IGNORE_FEATURES]
 
@@ -131,6 +137,7 @@ def build_preprocessor(data_path: Path) -> PreprocessorArtifacts:
         numeric_medians={k: float(v) for k, v in numeric_medians.items()},
         categorical_columns=categorical_columns,
         outlier_maxes={k: float(v) for k, v in outlier_maxes.items()},
+        numeric_ranges=numeric_ranges,
         features_to_scaled=features_to_scaled,
         scaler=scaler,
         raw_feature_columns=raw_feature_columns,
@@ -142,7 +149,22 @@ def build_preprocessor(data_path: Path) -> PreprocessorArtifacts:
 
 def load_preprocessor(data_path: Path, artifacts_path: Path) -> PreprocessorArtifacts:
     if artifacts_path.exists():
-        return joblib.load(artifacts_path)
+        preprocessor = joblib.load(artifacts_path)
+        if not hasattr(preprocessor, "numeric_ranges"):
+            numeric_ranges = _infer_numeric_ranges_from_scaler(preprocessor)
+            if numeric_ranges:
+                preprocessor.numeric_ranges = numeric_ranges
+                if CACHE_PREPROCESSOR:
+                    artifacts_path.parent.mkdir(parents=True, exist_ok=True)
+                    joblib.dump(preprocessor, artifacts_path)
+            else:
+                if not data_path.exists():
+                    raise RuntimeError(f"Data file not found to rebuild preprocessor: {data_path}")
+                preprocessor = build_preprocessor(data_path)
+                if CACHE_PREPROCESSOR:
+                    artifacts_path.parent.mkdir(parents=True, exist_ok=True)
+                    joblib.dump(preprocessor, artifacts_path)
+        return preprocessor
 
     if not data_path.exists():
         raise RuntimeError(f"Data file not found to build preprocessor: {data_path}")
@@ -157,6 +179,17 @@ def load_preprocessor(data_path: Path, artifacts_path: Path) -> PreprocessorArti
 def load_model(model_path: Path):
     with model_path.open("rb") as handle:
         return pickle.load(handle)
+
+
+def _infer_numeric_ranges_from_scaler(preprocessor: PreprocessorArtifacts) -> dict[str, tuple[float, float]]:
+    ranges = {}
+    scaler = getattr(preprocessor, "scaler", None)
+    if scaler is None or not hasattr(scaler, "data_min_") or not hasattr(scaler, "data_max_"):
+        return ranges
+    for idx, col in enumerate(preprocessor.features_to_scaled):
+        if col in preprocessor.numeric_medians:
+            ranges[col] = (float(scaler.data_min_[idx]), float(scaler.data_max_[idx]))
+    return ranges
 
 
 def _ensure_required_columns(df: pd.DataFrame, required_cols: list[str]) -> None:
@@ -189,6 +222,29 @@ def _validate_numeric_inputs(df: pd.DataFrame, numeric_cols: list[str]) -> None:
         )
 
 
+def _validate_numeric_ranges(df: pd.DataFrame, numeric_ranges: dict[str, tuple[float, float]]) -> None:
+    if not numeric_ranges:
+        return
+    out_of_range = []
+    for col, (min_val, max_val) in numeric_ranges.items():
+        if col not in df.columns:
+            continue
+        values = pd.to_numeric(df[col], errors="coerce")
+        if values.isna().any():
+            continue
+        if ((values < min_val) | (values > max_val)).any():
+            out_of_range.append(col)
+    if out_of_range:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Input contains values outside expected ranges.",
+                "out_of_range_columns": out_of_range[:25],
+                "out_of_range_count": len(out_of_range),
+            },
+        )
+
+
 def preprocess_input(df_raw: pd.DataFrame, artifacts: PreprocessorArtifacts) -> pd.DataFrame:
     df = df_raw.copy()
 
@@ -198,6 +254,7 @@ def preprocess_input(df_raw: pd.DataFrame, artifacts: PreprocessorArtifacts) -> 
 
     _ensure_required_columns(df, artifacts.required_raw_columns)
     _validate_numeric_inputs(df, artifacts.numeric_required_columns)
+    _validate_numeric_ranges(df, {k: v for k, v in artifacts.numeric_ranges.items() if k in artifacts.numeric_required_columns})
 
     df["is_train"] = 0
     df["is_test"] = 1
