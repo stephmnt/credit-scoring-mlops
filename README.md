@@ -66,8 +66,7 @@ Important : le modele `HistGB_final_model.pkl` doit etre regenere avec la
 nouvelle version de scikit-learn (re-execution de
 `P6_MANET_Stephane_notebook_modélisation.ipynb`, cellule de sauvegarde pickle).
 
-Note : `requirements.txt` est un snapshot historique. La reference pour un
-environnement stable est maintenant `pyproject.toml`.
+Note : `requirements.txt` est aligne sur `pyproject.toml` (meme versions).
 
 ### Exemple d'input (schema + valeurs)
 
