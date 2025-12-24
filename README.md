@@ -33,7 +33,21 @@ mlflow models serve -m "models:/credit_scoring_model/Staging" -p 5001 --no-conda
 
 L'API attend un payload JSON avec une cle `data`. La valeur peut etre un objet
 unique (un client) ou une liste d'objets (plusieurs clients). La liste des
-features requises est disponible via l'endpoint `/features`.
+features requises (jeu reduit) est disponible via l'endpoint `/features`. Les
+autres champs sont optionnels et seront completes par des valeurs par defaut.
+
+Inputs minimums (10 + `SK_ID_CURR`) :
+
+- `EXT_SOURCE_2`
+- `EXT_SOURCE_3`
+- `AMT_ANNUITY`
+- `EXT_SOURCE_1`
+- `CODE_GENDER`
+- `DAYS_EMPLOYED`
+- `AMT_CREDIT`
+- `AMT_GOODS_PRICE`
+- `DAYS_BIRTH`
+- `FLAG_OWN_CAR`
 
 ### Environnement Poetry (recommande)
 
@@ -63,18 +77,16 @@ Schema :
 {
   "data": {
     "SK_ID_CURR": "int",
-    "NAME_CONTRACT_TYPE": "str",
-    "CODE_GENDER": "str",
-    "FLAG_OWN_CAR": "str",
-    "FLAG_OWN_REALTY": "str",
-    "CNT_CHILDREN": "int",
-    "AMT_INCOME_TOTAL": "float",
-    "AMT_CREDIT": "float",
+    "EXT_SOURCE_2": "float",
+    "EXT_SOURCE_3": "float",
     "AMT_ANNUITY": "float",
+    "EXT_SOURCE_1": "float",
+    "CODE_GENDER": "str",
+    "DAYS_EMPLOYED": "int",
+    "AMT_CREDIT": "float",
     "AMT_GOODS_PRICE": "float",
     "DAYS_BIRTH": "int",
-    "DAYS_EMPLOYED": "int",
-    "CNT_FAM_MEMBERS": "int"
+    "FLAG_OWN_CAR": "str"
   }
 }
 ```
@@ -85,23 +97,22 @@ Valeurs d'exemple :
 {
   "data": {
     "SK_ID_CURR": 100002,
-    "NAME_CONTRACT_TYPE": "Cash loans",
-    "CODE_GENDER": "M",
-    "FLAG_OWN_CAR": "N",
-    "FLAG_OWN_REALTY": "Y",
-    "CNT_CHILDREN": 0,
-    "AMT_INCOME_TOTAL": 202500.0,
-    "AMT_CREDIT": 406597.5,
+    "EXT_SOURCE_2": 0.61,
+    "EXT_SOURCE_3": 0.75,
     "AMT_ANNUITY": 24700.5,
+    "EXT_SOURCE_1": 0.45,
+    "CODE_GENDER": "M",
+    "DAYS_EMPLOYED": -637,
+    "AMT_CREDIT": 406597.5,
     "AMT_GOODS_PRICE": 351000.0,
     "DAYS_BIRTH": -9461,
-    "DAYS_EMPLOYED": -637,
-    "CNT_FAM_MEMBERS": 1
+    "FLAG_OWN_CAR": "N"
   }
 }
 ```
 
-Note : l'API valide strictement les champs requis (liste complete dans `/features`).
+Note : l'API valide strictement les champs requis (`/features`). Pour afficher
+toutes les colonnes possibles : `/features?include_all=true`.
 
 ### Demo live (commandes cles en main)
 
@@ -131,18 +142,16 @@ curl -s -X POST "http://127.0.0.1:8000/predict?threshold=0.5" \
   -d '{
     "data": {
       "SK_ID_CURR": 100002,
-      "NAME_CONTRACT_TYPE": "Cash loans",
-      "CODE_GENDER": "M",
-      "FLAG_OWN_CAR": "N",
-      "FLAG_OWN_REALTY": "Y",
-      "CNT_CHILDREN": 0,
-      "AMT_INCOME_TOTAL": 202500.0,
-      "AMT_CREDIT": 406597.5,
+      "EXT_SOURCE_2": 0.61,
+      "EXT_SOURCE_3": 0.75,
       "AMT_ANNUITY": 24700.5,
+      "EXT_SOURCE_1": 0.45,
+      "CODE_GENDER": "M",
+      "DAYS_EMPLOYED": -637,
+      "AMT_CREDIT": 406597.5,
       "AMT_GOODS_PRICE": 351000.0,
       "DAYS_BIRTH": -9461,
-      "DAYS_EMPLOYED": -637,
-      "CNT_FAM_MEMBERS": 1
+      "FLAG_OWN_CAR": "N"
     }
   }'
 ```

@@ -12,7 +12,7 @@ def client():
 
 def _build_payload(preprocessor):
     data = {}
-    for col in preprocessor.required_raw_columns:
+    for col in preprocessor.required_input_columns:
         if col in preprocessor.numeric_medians:
             data[col] = preprocessor.numeric_medians[col]
         elif col in preprocessor.categorical_columns:
@@ -25,7 +25,7 @@ def _build_payload(preprocessor):
 
 def _pick_required_column(preprocessor, exclude=None):
     exclude = set(exclude or [])
-    for col in preprocessor.required_raw_columns:
+    for col in preprocessor.required_input_columns:
         if col not in exclude:
             return col
     raise AssertionError("No required column available for test.")
@@ -58,7 +58,7 @@ def test_features(client):
     assert "input_features" in payload
     assert "required_input_features" in payload
     assert "SK_ID_CURR" in payload["input_features"]
-    assert "AMT_INCOME_TOTAL" in payload["input_features"]
+    assert "EXT_SOURCE_2" in payload["input_features"]
 
 
 def test_predict(client):
