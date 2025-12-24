@@ -27,9 +27,22 @@ jobs:
       - name: Run tests
         run: poetry run pytest -q
 
-      - name: Build Docker image
-        run: docker build -t credit-scoring-api .
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Deploy (simulated)
+      - name: Login to Hugging Face registry
         if: github.ref == 'refs/heads/main'
-        run: echo "Simulated deployment step (configure registry/infra secrets to enable real deploy)."
+        uses: docker/login-action@v3
+        with:
+          registry: registry.huggingface.co
+          username: stephmnt
+          password: ${{ secrets.HF_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: |
+            registry.huggingface.co/spaces/stephmnt/projet_06:latest
+            registry.huggingface.co/spaces/stephmnt/projet_06:${{ github.sha }}
