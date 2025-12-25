@@ -4,7 +4,7 @@ uvicorn==0.30.6
 pydantic==2.12.4
 numpy==2.2.6
 pandas==2.2.3
-pyarrow==15.0.2
+pyarrow==22.0.0
 scikit-learn==1.8.0
 scipy==1.14.1
 joblib==1.5.2

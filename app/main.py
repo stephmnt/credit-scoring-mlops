@@ -24,6 +24,7 @@ CACHE_PREPROCESSOR = os.getenv("CACHE_PREPROCESSOR", "1") != "0"
 USE_REDUCED_INPUTS = os.getenv("USE_REDUCED_INPUTS", "1") != "0"
 CORRELATION_THRESHOLD = float(os.getenv("CORRELATION_THRESHOLD", "0.85"))
 CORRELATION_SAMPLE_SIZE = int(os.getenv("CORRELATION_SAMPLE_SIZE", "50000"))
+ALLOW_MISSING_ARTIFACTS = os.getenv("ALLOW_MISSING_ARTIFACTS", "0") == "1"
 
 IGNORE_FEATURES = ["is_train", "is_test", "TARGET", "SK_ID_CURR"]
 ENGINEERED_FEATURES = [
@@ -93,6 +94,15 @@ class PreprocessorArtifacts:
 
 
 app = FastAPI(title="Credit Scoring API", version="0.1.0")
+
+
+class DummyModel:
+    def predict_proba(self, X: pd.DataFrame | np.ndarray) -> np.ndarray:
+        count = len(X)
+        return np.tile([0.5, 0.5], (count, 1))
+
+    def predict(self, X: pd.DataFrame | np.ndarray) -> np.ndarray:
+        return np.zeros(len(X), dtype=int)
 
 
 def new_features_creation(df: pd.DataFrame) -> pd.DataFrame:
@@ -178,6 +188,91 @@ def build_preprocessor(data_path: Path) -> PreprocessorArtifacts:
         required_input_columns=required_input,
         numeric_required_columns=numeric_required,
         correlated_imputation=correlated_imputation,
+    )
+
+
+def build_fallback_preprocessor() -> PreprocessorArtifacts:
+    base = pd.DataFrame(
+        [
+            {
+                "SK_ID_CURR": 100001,
+                "EXT_SOURCE_1": 0.45,
+                "EXT_SOURCE_2": 0.61,
+                "EXT_SOURCE_3": 0.75,
+                "AMT_ANNUITY": 24700.5,
+                "AMT_CREDIT": 406597.5,
+                "AMT_GOODS_PRICE": 351000.0,
+                "DAYS_BIRTH": -9461,
+                "DAYS_EMPLOYED": -637,
+                "CODE_GENDER": "M",
+                "FLAG_OWN_CAR": "N",
+                "AMT_INCOME_TOTAL": 202500.0,
+                "CNT_FAM_MEMBERS": 1,
+                "CNT_CHILDREN": 0,
+            },
+            {
+                "SK_ID_CURR": 100002,
+                "EXT_SOURCE_1": 0.35,
+                "EXT_SOURCE_2": 0.52,
+                "EXT_SOURCE_3": 0.68,
+                "AMT_ANNUITY": 22000.0,
+                "AMT_CREDIT": 350000.0,
+                "AMT_GOODS_PRICE": 300000.0,
+                "DAYS_BIRTH": -12000,
+                "DAYS_EMPLOYED": -1200,
+                "CODE_GENDER": "F",
+                "FLAG_OWN_CAR": "Y",
+                "AMT_INCOME_TOTAL": 180000.0,
+                "CNT_FAM_MEMBERS": 2,
+                "CNT_CHILDREN": 1,
+            },
+        ]
+    )
+
+    df = new_features_creation(base)
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+    columns_keep = df.columns.tolist()
+    columns_must_not_missing = [col for col in columns_keep if col not in IGNORE_FEATURES]
+
+    numeric_cols = df.select_dtypes(include=["number"]).columns
+    numeric_medians = df[numeric_cols].median().to_dict()
+    df[numeric_cols] = df[numeric_cols].fillna(numeric_medians)
+
+    categorical_columns = df.select_dtypes(include=["object"]).columns.tolist()
+    df[categorical_columns] = df[categorical_columns].fillna("Unknown")
+
+    df_hot = pd.get_dummies(df, columns=categorical_columns)
+    features_to_scaled = [col for col in df_hot.columns if col not in IGNORE_FEATURES]
+    scaler = MinMaxScaler()
+    scaler.fit(df_hot[features_to_scaled])
+
+    raw_feature_columns = df.columns.tolist()
+    input_feature_columns = [c for c in raw_feature_columns if c not in ["is_train", "is_test", "TARGET"]]
+
+    required_raw = set(ENGINEERED_SOURCES)
+    required_raw.update(col for col in columns_must_not_missing if col in input_feature_columns)
+    required_raw.add("SK_ID_CURR")
+    required_input = sorted({col for col in REDUCED_INPUT_FEATURES if col in input_feature_columns})
+    numeric_required = sorted(col for col in required_input if col in numeric_medians)
+
+    numeric_ranges = {col: (float(df[col].min()), float(df[col].max())) for col in numeric_cols}
+
+    return PreprocessorArtifacts(
+        columns_keep=columns_keep,
+        columns_must_not_missing=columns_must_not_missing,
+        numeric_medians={k: float(v) for k, v in numeric_medians.items()},
+        categorical_columns=categorical_columns,
+        outlier_maxes={},
+        numeric_ranges=numeric_ranges,
+        features_to_scaled=features_to_scaled,
+        scaler=scaler,
+        raw_feature_columns=raw_feature_columns,
+        input_feature_columns=input_feature_columns,
+        required_raw_columns=sorted(required_raw),
+        required_input_columns=required_input,
+        numeric_required_columns=numeric_required,
+        correlated_imputation={},
     )
 
 
@@ -494,13 +589,24 @@ def preprocess_input(df_raw: pd.DataFrame, artifacts: PreprocessorArtifacts) -> 
 @app.on_event("startup")
 def startup_event() -> None:
     if not MODEL_PATH.exists():
-        raise RuntimeError(f"Model file not found: {MODEL_PATH}")
+        if ALLOW_MISSING_ARTIFACTS:
+            logger.warning("Model file not found: %s. Using dummy model.", MODEL_PATH)
+            app.state.model = DummyModel()
+        else:
+            raise RuntimeError(f"Model file not found: {MODEL_PATH}")
+    else:
+        logger.info("Loading model from %s", MODEL_PATH)
+        app.state.model = load_model(MODEL_PATH)
 
-    logger.info("Loading model from %s", MODEL_PATH)
-    app.state.model = load_model(MODEL_PATH)
-
-    logger.info("Loading preprocessor artifacts from %s", ARTIFACTS_PATH)
-    app.state.preprocessor = load_preprocessor(DATA_PATH, ARTIFACTS_PATH)
+    try:
+        logger.info("Loading preprocessor artifacts from %s", ARTIFACTS_PATH)
+        app.state.preprocessor = load_preprocessor(DATA_PATH, ARTIFACTS_PATH)
+    except RuntimeError as exc:
+        if ALLOW_MISSING_ARTIFACTS:
+            logger.warning("Preprocessor artifacts missing (%s). Using fallback preprocessor.", exc)
+            app.state.preprocessor = build_fallback_preprocessor()
+        else:
+            raise
 
 
 @app.get("/health")

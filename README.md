@@ -170,6 +170,10 @@ curl -s -X POST "http://127.0.0.1:8000/predict?threshold=0.5" \
 
 ![Screenshot MLFlow](screen-mlflow.png)
 
+## Réduction des features
+
+Réduction des features : l’API utilise un top‑10 SHAP, alors que la mission insiste sur une réduction à l’aide d’une matrice de corrélation. La corrélation est bien documentée dans le notebook d’exploration, mais la liste utilisée par l’API n’est pas explicitement issue de cette matrice. À clarifier dans la doc ou aligner la sélection sur la corrélation. Réfs : P6_MANET_Stephane_notebook_exploration.ipynb, main.py, README.md.
+
 ## Glossaire rapide
 
 - **custom_score** : metrique metier qui penalise plus fortement les faux negatifs que les faux positifs.

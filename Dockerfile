@@ -9,7 +9,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ app/
-COPY data/HistGB_final_model.pkl data/data_final.parquet data/
+COPY data/HistGB_final_model.pkl data/
+COPY artifacts/preprocessor.joblib artifacts/
 
 EXPOSE 8000
 

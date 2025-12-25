@@ -1,9 +1,11 @@
 ressources/
 .venv/
-data/
-artifacts/
 __pycache__/
 *.pyc
+data/*
+!data/HistGB_final_model.pkl
+artifacts/*
+!artifacts/preprocessor.joblib
 .DS_Store
 .vscode/
 .idea/
