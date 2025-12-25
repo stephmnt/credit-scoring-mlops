@@ -42,10 +42,11 @@ jobs:
             --exclude '__pycache__' \
             --exclude 'mlruns' \
             --exclude '*.ipynb' \
+            --exclude 'screen-mlflow.png' \
             --exclude 'data/*.csv' \
             --exclude 'data/*.parquet' \
             ./ hf_space/
           cd hf_space
           git add .
-          git commit -m "🚀 Auto-deploy from GitHub Actions" || echo "No changes to commit"
+          git commit -m "Auto-deploy from GitHub Actions" || echo "No changes to commit"
           git push https://stephmnt:${HF_TOKEN}@huggingface.co/spaces/stephmnt/ocr_projet06 main

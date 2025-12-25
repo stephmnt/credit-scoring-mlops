@@ -177,7 +177,7 @@ curl -s -X POST "http://127.0.0.1:7860/predict?threshold=0.5" \
 - **MLOps (MLflow)** : tracking des params / metriques (dont `custom_score` et `best_threshold`), tags,
   registry et passage en "Staging".
 
-![Screenshot MLFlow](screen-mlflow.png)
+![Screenshot MLFlow](https://raw.githubusercontent.com/stephmnt/OCR_Projet06/main/screen-mlflow.png)
 
 ## Réduction des features
 
