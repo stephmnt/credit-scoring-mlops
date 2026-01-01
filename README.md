@@ -208,19 +208,22 @@ Verifier le service (HF) :
 
 ```shell
 BASE_URL="https://stephmnt-credit-scoring-mlops.hf.space"
-curl -s "${BASE_URL}/health"
+API_BASE="${BASE_URL}/api"
+curl -s "${API_BASE}/health"
 ```
+
+Note : sur HF Spaces, l'UI Gradio est a la racine, l'API est sous `/api`.
 
 Voir les features attendues (HF) :
 
 ```shell
-curl -s "${BASE_URL}/features"
+curl -s "${API_BASE}/features"
 ```
 
 Predire un client (HF) :
 
 ```shell
-curl -s -X POST "${BASE_URL}/predict?threshold=0.5" \
+curl -s -X POST "${API_BASE}/predict?threshold=0.5" \
   -H "Content-Type: application/json" \
   -d '{
     "data": {
@@ -242,7 +245,7 @@ curl -s -X POST "${BASE_URL}/predict?threshold=0.5" \
 Predire plusieurs clients (batch, HF) :
 
 ```shell
-curl -s -X POST "${BASE_URL}/predict?threshold=0.45" \
+curl -s -X POST "${API_BASE}/predict?threshold=0.45" \
   -H "Content-Type: application/json" \
   -d '{
     "data": [
@@ -279,7 +282,7 @@ curl -s -X POST "${BASE_URL}/predict?threshold=0.45" \
 Exemple d'erreur (champ requis manquant, HF) :
 
 ```shell
-curl -s -X POST "${BASE_URL}/predict" \
+curl -s -X POST "${API_BASE}/predict" \
   -H "Content-Type: application/json" \
   -d '{
     "data": {
@@ -316,13 +319,13 @@ Recuperer les logs (HF) :
 Configurer `LOGS_ACCESS_TOKEN` dans les secrets du Space, puis :
 
 ```shell
-curl -s -H "X-Logs-Token: $LOGS_ACCESS_TOKEN" "${BASE_URL}/logs?tail=200"
+curl -s -H "X-Logs-Token: $LOGS_ACCESS_TOKEN" "${API_BASE}/logs?tail=200"
 ```
 
 Alternative :
 
 ```shell
-curl -s -H "Authorization: Bearer $LOGS_ACCESS_TOKEN" "${BASE_URL}/logs?tail=200"
+curl -s -H "Authorization: Bearer $LOGS_ACCESS_TOKEN" "${API_BASE}/logs?tail=200"
 ```
 
 Apres quelques requêtes, générer le rapport de drift :

@@ -21,6 +21,7 @@ joblib = "1.5.2"
 threadpoolctl = "3.5.0"
 streamlit = "1.37.1"
 gradio = "4.44.1"
+huggingface_hub = "1.2.3"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "8.3.2"

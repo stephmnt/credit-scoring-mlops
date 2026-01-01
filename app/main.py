@@ -1091,6 +1091,8 @@ def preprocess_input(df_raw: pd.DataFrame, artifacts: PreprocessorArtifacts) -> 
 
 @app.on_event("startup")
 def startup_event() -> None:
+    if getattr(app.state, "model", None) is not None and getattr(app.state, "preprocessor", None) is not None:
+        return
     model_path = MODEL_PATH
     if not model_path.exists():
         downloaded = _ensure_hf_asset(
