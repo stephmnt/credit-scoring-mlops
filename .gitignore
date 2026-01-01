@@ -6,6 +6,7 @@ logs/
 reports/
 data/*
 !data/HistGB_final_model.pkl
+!data/data_final.parquet
 artifacts/*
 !artifacts/preprocessor.joblib
 .DS_Store
