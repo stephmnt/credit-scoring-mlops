@@ -47,6 +47,8 @@ jobs:
             --exclude 'logs' \
             --exclude 'reports' \
             --exclude 'screen-mlflow.png' \
+            --exclude 'data/HistGB_final_model.pkl' \
+            --exclude 'artifacts/preprocessor.joblib' \
             --exclude 'data/*.csv' \
             --exclude 'data/*.parquet' \
             ./ hf_space/

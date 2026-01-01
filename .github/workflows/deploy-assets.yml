@@ -1,0 +1,67 @@
+name: deploy-assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_id:
+        description: "HF repo id (e.g. stephmnt/assets-credit-scoring-mlops)"
+        required: true
+        default: "stephmnt/assets-credit-scoring-mlops"
+      repo_type:
+        description: "HF repo type (dataset or model)"
+        required: true
+        default: "dataset"
+
+jobs:
+  upload-assets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install huggingface_hub
+
+      - name: Upload assets to Hugging Face Hub
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO_ID: ${{ inputs.repo_id }}
+          HF_REPO_TYPE: ${{ inputs.repo_type }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from huggingface_hub import HfApi
+          
+          repo_id = os.environ["HF_REPO_ID"]
+          repo_type = os.environ["HF_REPO_TYPE"]
+          token = os.environ["HF_TOKEN"]
+          
+          files = {
+              "data/HistGB_final_model.pkl": "HistGB_final_model.pkl",
+              "artifacts/preprocessor.joblib": "preprocessor.joblib",
+              "data/data_final.parquet": "data_final.parquet",
+          }
+          
+          api = HfApi()
+          for local_path, remote_name in files.items():
+              path = Path(local_path)
+              if not path.exists():
+                  raise SystemExit(f"Missing file: {path}")
+              api.upload_file(
+                  path_or_fileobj=str(path),
+                  path_in_repo=remote_name,
+                  repo_id=repo_id,
+                  repo_type=repo_type,
+                  token=token,
+                  commit_message=f"Update {remote_name}",
+              )
+          print("Assets uploaded.")
+          PY

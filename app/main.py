@@ -41,6 +41,18 @@ LOG_INCLUDE_INPUTS = os.getenv("LOG_INCLUDE_INPUTS", "1") == "1"
 LOG_HASH_SK_ID = os.getenv("LOG_HASH_SK_ID", "0") == "1"
 MODEL_VERSION = os.getenv("MODEL_VERSION", MODEL_PATH.name)
 LOGS_ACCESS_TOKEN = os.getenv("LOGS_ACCESS_TOKEN")
+CUSTOMER_DATA_PATH = Path(os.getenv("CUSTOMER_DATA_PATH", str(DATA_PATH)))
+CUSTOMER_LOOKUP_ENABLED = os.getenv("CUSTOMER_LOOKUP_ENABLED", "1") == "1"
+CUSTOMER_LOOKUP_CACHE = os.getenv("CUSTOMER_LOOKUP_CACHE", "1") == "1"
+HF_MODEL_REPO_ID = os.getenv("HF_MODEL_REPO_ID")
+HF_MODEL_REPO_TYPE = os.getenv("HF_MODEL_REPO_TYPE", "model")
+HF_MODEL_FILENAME = os.getenv("HF_MODEL_FILENAME", MODEL_PATH.name)
+HF_PREPROCESSOR_REPO_ID = os.getenv("HF_PREPROCESSOR_REPO_ID", HF_MODEL_REPO_ID or "")
+HF_PREPROCESSOR_REPO_TYPE = os.getenv("HF_PREPROCESSOR_REPO_TYPE", HF_MODEL_REPO_TYPE)
+HF_PREPROCESSOR_FILENAME = os.getenv("HF_PREPROCESSOR_FILENAME", ARTIFACTS_PATH.name)
+HF_CUSTOMER_REPO_ID = os.getenv("HF_CUSTOMER_REPO_ID")
+HF_CUSTOMER_REPO_TYPE = os.getenv("HF_CUSTOMER_REPO_TYPE", "dataset")
+HF_CUSTOMER_FILENAME = os.getenv("HF_CUSTOMER_FILENAME", CUSTOMER_DATA_PATH.name)
 
 IGNORE_FEATURES = ["is_train", "is_test", "TARGET", "SK_ID_CURR"]
 ENGINEERED_FEATURES = [
@@ -117,6 +129,13 @@ class PredictionRequest(BaseModel):
     data: dict[str, Any] | list[dict[str, Any]]
 
 
+class MinimalPredictionRequest(BaseModel):
+    sk_id_curr: int
+    amt_credit: float
+    duration_months: int | None = None
+    amt_annuity: float | None = None
+
+
 @dataclass
 class PreprocessorArtifacts:
     columns_keep: list[str]
@@ -171,6 +190,32 @@ def _normalize_category_value(value: object, mapping: dict[str, str]) -> object:
     if not key:
         return np.nan
     return mapping.get(key, "Unknown")
+
+
+def _ensure_hf_asset(
+    local_path: Path,
+    repo_id: str | None,
+    filename: str,
+    repo_type: str,
+) -> Path | None:
+    if local_path.exists():
+        return local_path
+    if not repo_id:
+        return None
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError("huggingface_hub is required to download remote assets.") from exc
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    return Path(
+        hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            repo_type=repo_type,
+            local_dir=str(local_path.parent),
+            local_dir_use_symlinks=False,
+        )
+    )
 
 
 def _normalize_inputs(
@@ -260,6 +305,54 @@ def _build_data_quality_records(
             }
         )
     return records
+
+
+def _build_minimal_record(
+    payload: MinimalPredictionRequest,
+    preprocessor: PreprocessorArtifacts,
+) -> dict[str, Any]:
+    reference = _get_customer_reference(preprocessor)
+    if reference is None:
+        raise HTTPException(
+            status_code=503,
+            detail={"message": "Customer reference data is not available."},
+        )
+    sk_id = int(payload.sk_id_curr)
+    if sk_id not in reference.index:
+        raise HTTPException(
+            status_code=404,
+            detail={"message": f"Client {sk_id} not found in reference data."},
+        )
+    record = reference.loc[sk_id].to_dict()
+    record["SK_ID_CURR"] = sk_id
+    if payload.amt_credit <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "AMT_CREDIT must be positive."},
+        )
+    record["AMT_CREDIT"] = float(payload.amt_credit)
+    if payload.amt_annuity is not None:
+        if payload.amt_annuity <= 0:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": "AMT_ANNUITY must be positive."},
+            )
+        record["AMT_ANNUITY"] = float(payload.amt_annuity)
+    elif payload.duration_months is not None:
+        if payload.duration_months <= 0:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": "duration_months must be positive."},
+            )
+        record["AMT_ANNUITY"] = float(payload.amt_credit) / float(payload.duration_months)
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "Provide duration_months or amt_annuity."},
+        )
+    if "AMT_GOODS_PRICE" in record:
+        record["AMT_GOODS_PRICE"] = float(payload.amt_credit)
+    return record
 
 
 def _append_log_entries(entries: list[dict[str, Any]]) -> None:
@@ -594,6 +687,41 @@ def load_preprocessor(data_path: Path, artifacts_path: Path) -> PreprocessorArti
 def load_model(model_path: Path):
     with model_path.open("rb") as handle:
         return pickle.load(handle)
+
+
+def _load_customer_reference(
+    data_path: Path,
+    preprocessor: PreprocessorArtifacts,
+) -> pd.DataFrame:
+    columns = list(preprocessor.input_feature_columns)
+    if "SK_ID_CURR" not in columns:
+        columns.insert(0, "SK_ID_CURR")
+    df = pd.read_parquet(data_path, columns=columns)
+    df = df.drop_duplicates(subset=["SK_ID_CURR"], keep="last").set_index("SK_ID_CURR")
+    return df
+
+
+def _get_customer_reference(preprocessor: PreprocessorArtifacts) -> pd.DataFrame | None:
+    if not CUSTOMER_LOOKUP_ENABLED:
+        return None
+    cached = getattr(app.state, "customer_reference", None)
+    if cached is not None:
+        return cached
+    data_path = CUSTOMER_DATA_PATH
+    if not data_path.exists():
+        downloaded = _ensure_hf_asset(
+            data_path,
+            HF_CUSTOMER_REPO_ID,
+            HF_CUSTOMER_FILENAME,
+            HF_CUSTOMER_REPO_TYPE,
+        )
+        if downloaded is None:
+            return None
+        data_path = downloaded
+    ref = _load_customer_reference(data_path, preprocessor)
+    if CUSTOMER_LOOKUP_CACHE:
+        app.state.customer_reference = ref
+    return ref
 
 
 def _infer_numeric_ranges_from_scaler(preprocessor: PreprocessorArtifacts) -> dict[str, tuple[float, float]]:
@@ -963,25 +1091,58 @@ def preprocess_input(df_raw: pd.DataFrame, artifacts: PreprocessorArtifacts) -> 
 
 @app.on_event("startup")
 def startup_event() -> None:
-    if not MODEL_PATH.exists():
+    model_path = MODEL_PATH
+    if not model_path.exists():
+        downloaded = _ensure_hf_asset(
+            model_path,
+            HF_MODEL_REPO_ID,
+            HF_MODEL_FILENAME,
+            HF_MODEL_REPO_TYPE,
+        )
+        if downloaded is not None:
+            model_path = downloaded
+    if not model_path.exists():
         if ALLOW_MISSING_ARTIFACTS:
-            logger.warning("Model file not found: %s. Using dummy model.", MODEL_PATH)
+            logger.warning("Model file not found: %s. Using dummy model.", model_path)
             app.state.model = DummyModel()
         else:
-            raise RuntimeError(f"Model file not found: {MODEL_PATH}")
+            raise RuntimeError(f"Model file not found: {model_path}")
     else:
-        logger.info("Loading model from %s", MODEL_PATH)
-        app.state.model = load_model(MODEL_PATH)
+        logger.info("Loading model from %s", model_path)
+        app.state.model = load_model(model_path)
 
     try:
-        logger.info("Loading preprocessor artifacts from %s", ARTIFACTS_PATH)
-        app.state.preprocessor = load_preprocessor(DATA_PATH, ARTIFACTS_PATH)
+        artifacts_path = ARTIFACTS_PATH
+        if not artifacts_path.exists():
+            downloaded = _ensure_hf_asset(
+                artifacts_path,
+                HF_PREPROCESSOR_REPO_ID or None,
+                HF_PREPROCESSOR_FILENAME,
+                HF_PREPROCESSOR_REPO_TYPE,
+            )
+            if downloaded is not None:
+                artifacts_path = downloaded
+        logger.info("Loading preprocessor artifacts from %s", artifacts_path)
+        app.state.preprocessor = load_preprocessor(DATA_PATH, artifacts_path)
     except RuntimeError as exc:
         if ALLOW_MISSING_ARTIFACTS:
             logger.warning("Preprocessor artifacts missing (%s). Using fallback preprocessor.", exc)
             app.state.preprocessor = build_fallback_preprocessor()
         else:
             raise
+
+    app.state.customer_reference = None
+    if CUSTOMER_LOOKUP_ENABLED and CUSTOMER_LOOKUP_CACHE:
+        try:
+            ref = _get_customer_reference(app.state.preprocessor)
+            if ref is not None:
+                logger.info("Loaded customer reference data (%s rows)", len(ref))
+            else:
+                logger.warning("Customer reference data not available.")
+        except Exception as exc:  # pragma: no cover - optional cache load
+            logger.warning("Failed to load customer reference data: %s", exc)
+    elif CUSTOMER_LOOKUP_ENABLED:
+        logger.info("Customer lookup enabled without cache (on-demand load).")
 
 
 @app.get("/health")
@@ -1063,16 +1224,11 @@ def logs(
     return Response(content="".join(lines), media_type="application/x-ndjson")
 
 
-@app.post("/predict")
-def predict(
-    payload: PredictionRequest,
-    threshold: float | None = Query(default=None, ge=0.0, le=1.0),
-) -> dict[str, Any]:
+def _predict_records(records: list[dict[str, Any]], threshold: float | None) -> dict[str, Any]:
     model = app.state.model
     preprocessor: PreprocessorArtifacts = app.state.preprocessor
     request_id = str(uuid.uuid4())
     start_time = time.perf_counter()
-    records = payload.data if isinstance(payload.data, list) else [payload.data]
 
     if not records:
         raise HTTPException(status_code=422, detail={"message": "No input records provided."})
@@ -1168,3 +1324,22 @@ def predict(
             error=str(exc),
         )
         raise
+
+
+@app.post("/predict")
+def predict(
+    payload: PredictionRequest,
+    threshold: float | None = Query(default=None, ge=0.0, le=1.0),
+) -> dict[str, Any]:
+    records = payload.data if isinstance(payload.data, list) else [payload.data]
+    return _predict_records(records, threshold)
+
+
+@app.post("/predict-minimal")
+def predict_minimal(
+    payload: MinimalPredictionRequest,
+    threshold: float | None = Query(default=None, ge=0.0, le=1.0),
+) -> dict[str, Any]:
+    preprocessor: PreprocessorArtifacts = app.state.preprocessor
+    record = _build_minimal_record(payload, preprocessor)
+    return _predict_records([record], threshold)

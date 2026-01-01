@@ -1,5 +1,5 @@
 ---
-title: OCR Projet 06
+title: Credit scoring MLOps
 emoji: 🤖
 colorFrom: indigo
 colorTo: green
@@ -8,7 +8,7 @@ app_port: 7860
 pinned: false
 ---
 
-# OCR Projet 06 – Crédit
+# Credit scoring MLOps
 
 [![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/stephmnt/credit-scoring-mlops/deploy.yml)](https://github.com/stephmnt/credit-scoring-mlops/actions/workflows/deploy.yml)
 [![GitHub Release Date](https://img.shields.io/github/release-date/stephmnt/credit-scoring-mlops?display_date=published_at&style=flat-square)](https://github.com/stephmnt/credit-scoring-mlops/releases)
@@ -132,6 +132,29 @@ Valeurs d'exemple :
 }
 ```
 
+### Prediction minimale (client existant)
+
+Endpoint `POST /predict-minimal` : l'utilisateur fournit un identifiant client,
+un montant de credit et une duree. Les autres features sont prises depuis la
+reference clients (`CUSTOMER_DATA_PATH`, par defaut `data/data_final.parquet`).
+Si la reference est absente, l'API renvoie 503.
+
+```shell
+curl -s -X POST "${BASE_URL}/predict-minimal" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sk_id_curr": 100001,
+    "amt_credit": 200000,
+    "duration_months": 60
+  }'
+```
+
+Variables utiles :
+
+- `CUSTOMER_LOOKUP_ENABLED=1` active la recherche client (defaut: 1)
+- `CUSTOMER_DATA_PATH=data/data_final.parquet`
+- `CUSTOMER_LOOKUP_CACHE=1` garde la reference en memoire
+
 ### Data contract (validation)
 
 - Types numeriques stricts (invalides -> 422).
@@ -140,8 +163,38 @@ Valeurs d'exemple :
 - Sentinelle `DAYS_EMPLOYED=365243` remplacee par NaN.
 - Logs enrichis via `data_quality` pour distinguer drift vs qualite de donnees.
 
+### Interface Gradio (scoring)
+
+```shell
+python gradio_app.py
+```
+
+Sur Hugging Face Spaces, `app.py` lance l'UI Gradio automatiquement.
+
 Note : l'API valide strictement les champs requis (`/features`). Pour afficher
 toutes les colonnes possibles : `/features?include_all=true`.
+
+### Hugging Face (assets lourds)
+
+Les fichiers binaires (modele, preprocessor, data_final) ne sont pas pushes
+dans le Space. Ils sont telecharges a l'execution via Hugging Face Hub si les
+variables suivantes sont definies :
+
+- `HF_MODEL_REPO_ID` + `HF_MODEL_FILENAME` + `HF_MODEL_REPO_TYPE`
+- `HF_PREPROCESSOR_REPO_ID` + `HF_PREPROCESSOR_FILENAME` + `HF_PREPROCESSOR_REPO_TYPE`
+- `HF_CUSTOMER_REPO_ID` + `HF_CUSTOMER_FILENAME` + `HF_CUSTOMER_REPO_TYPE`
+
+Exemple (un seul repo dataset avec 3 fichiers) :
+
+- `HF_MODEL_REPO_ID=stephmnt/credit-scoring-mlops-assets`
+- `HF_MODEL_REPO_TYPE=dataset`
+- `HF_MODEL_FILENAME=HistGB_final_model.pkl`
+- `HF_PREPROCESSOR_REPO_ID=stephmnt/credit-scoring-mlops-assets`
+- `HF_PREPROCESSOR_REPO_TYPE=dataset`
+- `HF_PREPROCESSOR_FILENAME=preprocessor.joblib`
+- `HF_CUSTOMER_REPO_ID=stephmnt/credit-scoring-mlops-assets`
+- `HF_CUSTOMER_REPO_TYPE=dataset`
+- `HF_CUSTOMER_FILENAME=data_final.parquet`
 
 ### Demo live (commandes cles en main)
 
@@ -346,6 +399,7 @@ python -m streamlit run monitoring/streamlit_app.py
 - **Score metier + seuil optimal** : le `custom_score` est la metrique principale des tableaux de comparaison et de la CV, avec un `best_threshold` calcule.
 - **Explicabilite** : feature importance, SHAP et LIME sont inclus.
 - **Selection de features par correlation** : top‑N numeriques + un petit set categoriel, expose via `/features`.
+- **Interface Gradio** : formulaire minimal (id client + montant + duree) base sur la reference clients.
 - **Monitoring & drift** : rapport HTML avec gating par volume, PSI robuste, KS + FDR, data quality et
   distribution des scores (snapshots dans `docs/monitoring/`).
 - **Profiling & optimisation** : benchmark d'inference + profil cProfile (dossier `docs/performance/`).
