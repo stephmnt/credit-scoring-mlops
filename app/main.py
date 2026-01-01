@@ -1113,6 +1113,16 @@ def startup_event() -> None:
         logger.info("Loading model from %s", model_path)
         app.state.model = load_model(model_path)
 
+    data_path = DATA_PATH
+    if not data_path.exists():
+        downloaded = _ensure_hf_asset(
+            data_path,
+            HF_CUSTOMER_REPO_ID,
+            HF_CUSTOMER_FILENAME,
+            HF_CUSTOMER_REPO_TYPE,
+        )
+        if downloaded is not None:
+            data_path = downloaded
     try:
         artifacts_path = ARTIFACTS_PATH
         if not artifacts_path.exists():
@@ -1125,7 +1135,7 @@ def startup_event() -> None:
             if downloaded is not None:
                 artifacts_path = downloaded
         logger.info("Loading preprocessor artifacts from %s", artifacts_path)
-        app.state.preprocessor = load_preprocessor(DATA_PATH, artifacts_path)
+        app.state.preprocessor = load_preprocessor(data_path, artifacts_path)
     except RuntimeError as exc:
         if ALLOW_MISSING_ARTIFACTS:
             logger.warning("Preprocessor artifacts missing (%s). Using fallback preprocessor.", exc)
