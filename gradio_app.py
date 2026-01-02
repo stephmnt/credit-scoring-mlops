@@ -3,9 +3,19 @@ from __future__ import annotations
 from typing import Any
 
 import gradio as gr
+import numpy as np
+import pandas as pd
 from fastapi import HTTPException
 
-from app.main import MinimalPredictionRequest, app, predict_minimal, startup_event
+from app.main import (
+    MinimalPredictionRequest,
+    app,
+    predict_minimal,
+    startup_event,
+    _build_minimal_record,
+    _normalize_inputs,
+    preprocess_input,
+)
 
 
 def _ensure_startup() -> None:
@@ -30,12 +40,73 @@ def _customer_snapshot(sk_id_curr: int) -> dict[str, Any]:
     return snapshot
 
 
+def _shap_error_table(message: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "feature": message,
+                "value": np.nan,
+                "shap_value": np.nan,
+            }
+        ]
+    )
+
+
+def _extract_shap_values(shap_values: Any) -> np.ndarray:
+    if isinstance(shap_values, list):
+        shap_values = shap_values[1] if len(shap_values) > 1 else shap_values[0]
+    values = np.asarray(shap_values)
+    if values.ndim == 3:
+        values = values[:, :, 1]
+    if values.ndim == 1:
+        values = values.reshape(1, -1)
+    return values
+
+
+def _compute_shap_top_features(record: dict[str, Any], top_k: int = 10) -> pd.DataFrame:
+    preprocessor = app.state.preprocessor
+    df_raw = pd.DataFrame.from_records([record])
+    df_norm, _, _ = _normalize_inputs(df_raw, preprocessor)
+    features = preprocess_input(df_norm, preprocessor)
+    try:
+        import shap
+    except ImportError:
+        return _shap_error_table("SHAP not installed.")
+
+    explainer = getattr(app.state, "shap_explainer", None)
+    if explainer is None:
+        try:
+            explainer = shap.TreeExplainer(app.state.model)
+        except Exception:
+            explainer = shap.Explainer(app.state.model, features)
+        app.state.shap_explainer = explainer
+
+    try:
+        explanation = explainer(features)
+        values = _extract_shap_values(explanation.values)
+    except Exception:
+        values = _extract_shap_values(explainer.shap_values(features))
+
+    shap_row = values[0]
+    feature_values = features.iloc[0].to_numpy()
+    top_idx = np.argsort(np.abs(shap_row))[::-1][:top_k]
+    rows = [
+        {
+            "feature": str(features.columns[idx]),
+            "value": float(feature_values[idx]),
+            "shap_value": float(shap_row[idx]),
+        }
+        for idx in top_idx
+    ]
+    return pd.DataFrame(rows)
+
+
 def score_minimal(
     sk_id_curr: float,
     amt_credit: float,
     duration_months: float,
     threshold: float,
-) -> tuple[float | None, str, float | None, dict[str, Any]]:
+) -> tuple[float | None, str, float | None, pd.DataFrame, dict[str, Any]]:
     _ensure_startup()
     try:
         payload = MinimalPredictionRequest(
@@ -43,11 +114,13 @@ def score_minimal(
             amt_credit=float(amt_credit),
             duration_months=int(duration_months),
         )
+        record = _build_minimal_record(payload, app.state.preprocessor)
         response = predict_minimal(payload, threshold=float(threshold))
         result = response["predictions"][0]
         probability = float(result.get("probability", 0.0))
         pred_value = int(result.get("prediction", 0))
         label = "Default (1)" if pred_value == 1 else "No default (0)"
+        shap_table = _compute_shap_top_features(record, top_k=10)
         snapshot = _customer_snapshot(int(sk_id_curr))
         snapshot.update(
             {
@@ -55,11 +128,11 @@ def score_minimal(
                 "DURATION_MONTHS": int(duration_months),
             }
         )
-        return probability, label, float(response.get("threshold", 0.0)), snapshot
+        return probability, label, float(response.get("threshold", 0.0)), shap_table, snapshot
     except HTTPException as exc:
-        return None, f"Erreur: {exc.detail}", None, {"error": exc.detail}
+        return None, f"Erreur: {exc.detail}", None, _shap_error_table("No SHAP available."), {"error": exc.detail}
     except Exception as exc:  # pragma: no cover - UI fallback
-        return None, f"Erreur: {exc}", None, {"error": str(exc)}
+        return None, f"Erreur: {exc}", None, _shap_error_table("No SHAP available."), {"error": str(exc)}
 
 
 with gr.Blocks(title="Credit scoring MLOps") as demo:
@@ -91,12 +164,19 @@ with gr.Blocks(title="Credit scoring MLOps") as demo:
         prediction = gr.Textbox(label="Prédiction")
         threshold_used = gr.Number(label="Seuil utilisé")
 
+    shap_table = gr.Dataframe(
+        headers=["feature", "value", "shap_value"],
+        label="Top 10 SHAP (local)",
+        datatype=["str", "number", "number"],
+        interactive=False,
+    )
+
     snapshot = gr.JSON(label="Snapshot client (référence)")
 
     run_btn.click(
         score_minimal,
         inputs=[sk_id_curr, amt_credit, duration_months, threshold],
-        outputs=[probability, prediction, threshold_used, snapshot],
+        outputs=[probability, prediction, threshold_used, shap_table, snapshot],
     )
 
 
