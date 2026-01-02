@@ -62,27 +62,36 @@ def score_minimal(
         return None, f"Erreur: {exc}", None, {"error": str(exc)}
 
 
-with gr.Blocks(title="Credit Scoring - Minimal Inputs") as demo:
-    gr.Markdown("# Credit Scoring - Minimal Inputs")
+with gr.Blocks(title="Credit scoring MLOps") as demo:
+    gr.Markdown("# Credit scoring MLOps")
+    gr.HTML("""
+            <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+            <a href="https://github.com/stephmnt/credit-scoring-mlops/releases" target="_blank" rel="noreferrer">
+                <img src="https://img.shields.io/github/v/release/stephmnt/credit-scoring-mlops" alt="GitHub Release" />
+            </a>
+            <a href="https://github.com/stephmnt/credit-scoring-mlops/actions/workflows/deploy.yml" target="_blank" rel="noreferrer">
+                <img src="https://img.shields.io/github/actions/workflow/status/stephmnt/credit-scoring-mlops/deploy.yml" alt="GitHub Actions Workflow Status" />
+            </a>
+        </div>
+        """)
     gr.Markdown(
-        "Renseignez l'identifiant client, le montant du credit et la duree. "
-        "Les autres features proviennent des donnees clients reference."
+        "Renseignez l'identifiant client, le montant du crédit et la durée. "
     )
 
     with gr.Row():
-        sk_id_curr = gr.Number(label="SK_ID_CURR", precision=0, value=100001)
-        amt_credit = gr.Number(label="AMT_CREDIT", value=200000)
-        duration_months = gr.Number(label="Duree (mois)", precision=0, value=60)
+        sk_id_curr = gr.Number(label="Identifiant client", precision=0, value=100001)
+        amt_credit = gr.Number(label="Montant du crédit", value=200000)
+        duration_months = gr.Number(label="Durée (mois)", precision=0, value=60)
         threshold = gr.Slider(label="Seuil", minimum=0.0, maximum=1.0, value=0.5, step=0.01)
 
     run_btn = gr.Button("Scorer")
 
     with gr.Row():
-        probability = gr.Number(label="Probabilite de defaut")
-        prediction = gr.Textbox(label="Decision")
-        threshold_used = gr.Number(label="Seuil utilise")
+        probability = gr.Number(label="Probabilité de défaut")
+        prediction = gr.Textbox(label="Prédiction")
+        threshold_used = gr.Number(label="Seuil utilisé")
 
-    snapshot = gr.JSON(label="Snapshot client (reference)")
+    snapshot = gr.JSON(label="Snapshot client (référence)")
 
     run_btn.click(
         score_minimal,
