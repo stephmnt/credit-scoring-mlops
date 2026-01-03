@@ -10,11 +10,11 @@ from fastapi import HTTPException
 from app.main import (
     MinimalPredictionRequest,
     app,
+    prepare_inference_features,
     predict_minimal,
     startup_event,
     _build_minimal_record,
     _normalize_inputs,
-    preprocess_input,
 )
 
 
@@ -65,34 +65,62 @@ def _extract_shap_values(shap_values: Any) -> np.ndarray:
 
 def _compute_shap_top_features(record: dict[str, Any], top_k: int = 10) -> pd.DataFrame:
     preprocessor = app.state.preprocessor
+    model = app.state.model
     df_raw = pd.DataFrame.from_records([record])
     df_norm, _, _ = _normalize_inputs(df_raw, preprocessor)
-    features = preprocess_input(df_norm, preprocessor)
+    features = prepare_inference_features(df_norm, preprocessor, model)
     try:
         import shap
     except ImportError:
         return _shap_error_table("SHAP not installed.")
 
+    estimator = model
+    X_shap = features
+    if hasattr(model, "named_steps") and model.named_steps.get("preprocessing") is not None:
+        estimator = model.named_steps.get("estimator", model)
+        pipeline_preprocessor = model.named_steps["preprocessing"]
+        try:
+            X_shap = pipeline_preprocessor.transform(features)
+        except Exception as exc:
+            return _shap_error_table(f"SHAP preprocessing failed: {exc}")
+        try:
+            import scipy.sparse as sp
+            if sp.issparse(X_shap):
+                X_shap = X_shap.toarray()
+        except Exception:
+            pass
+        try:
+            feature_names = pipeline_preprocessor.get_feature_names_out()
+        except Exception:
+            feature_names = None
+        if feature_names is not None:
+            X_shap = pd.DataFrame(X_shap, columns=feature_names)
+
     explainer = getattr(app.state, "shap_explainer", None)
     if explainer is None:
         try:
-            explainer = shap.TreeExplainer(app.state.model)
+            explainer = shap.TreeExplainer(estimator)
         except Exception:
-            explainer = shap.Explainer(app.state.model, features)
+            explainer = shap.Explainer(estimator, X_shap)
         app.state.shap_explainer = explainer
 
     try:
-        explanation = explainer(features)
+        explanation = explainer(X_shap)
         values = _extract_shap_values(explanation.values)
     except Exception:
-        values = _extract_shap_values(explainer.shap_values(features))
+        values = _extract_shap_values(explainer.shap_values(X_shap)) # type: ignore
 
     shap_row = values[0]
-    feature_values = features.iloc[0].to_numpy()
+    if isinstance(X_shap, pd.DataFrame):
+        feature_values = X_shap.iloc[0].to_numpy()
+        feature_names = X_shap.columns
+    else:
+        feature_values = np.asarray(X_shap)[0]
+        feature_names = [f"feature_{idx}" for idx in range(len(feature_values))]
     top_idx = np.argsort(np.abs(shap_row))[::-1][:top_k]
     rows = [
         {
-            "feature": str(features.columns[idx]),
+            "feature": str(feature_names[idx]),
             "value": float(feature_values[idx]),
             "shap_value": float(shap_row[idx]),
         }
@@ -115,7 +143,7 @@ def score_minimal(
             duration_months=int(duration_months),
         )
         record = _build_minimal_record(payload, app.state.preprocessor)
-        response = predict_minimal(payload, threshold=float(threshold))
+        response = predict_minimal(payload, threshold=float(threshold), x_client_source="gradio")
         result = response["predictions"][0]
         probability = float(result.get("probability", 0.0))
         pred_value = int(result.get("prediction", 0))

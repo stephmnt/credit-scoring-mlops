@@ -206,6 +206,37 @@ def _extract_data_quality(meta_df: pd.DataFrame) -> list[dict[str, object]]:
     return dq_entries
 
 
+def _normalize_error_message(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        message = value.get("message")
+        return str(message) if message else json.dumps(value, ensure_ascii=True)
+    if isinstance(value, list):
+        return str(value[0]) if value else ""
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned:
+            return ""
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError:
+            return cleaned
+        return _normalize_error_message(parsed)
+    return str(value)
+
+
+def _summarize_errors(meta_df: pd.DataFrame, max_items: int = 5) -> list[tuple[str, int]]:
+    if "error" not in meta_df.columns:
+        return []
+    errors = meta_df["error"].dropna().apply(_normalize_error_message)
+    errors = errors[errors != ""]
+    if errors.empty:
+        return []
+    counts = errors.value_counts().head(max_items)
+    return list(zip(counts.index.tolist(), counts.tolist()))
+
+
 def _dq_has_unknown(dq: dict[str, object], feature: str) -> bool:
     unknown = dq.get("unknown_categories")
     if isinstance(unknown, dict):
@@ -232,6 +263,9 @@ def _summarize_data_quality(
         out_of_range_rate = np.mean(
             [bool(dq.get("out_of_range_columns")) for dq in dq_entries]
         )
+        outlier_rate = np.mean(
+            [bool(dq.get("outlier_columns")) for dq in dq_entries]
+        )
         nan_rate = np.mean([float(dq.get("nan_rate", 0.0)) for dq in dq_entries])
         unknown_gender = np.mean(
             [_dq_has_unknown(dq, "CODE_GENDER") for dq in dq_entries]
@@ -248,6 +282,7 @@ def _summarize_data_quality(
             "missing_required_rate": float(missing_rate),
             "invalid_numeric_rate": float(invalid_rate),
             "out_of_range_rate": float(out_of_range_rate),
+            "outlier_rate": float(outlier_rate),
             "nan_rate": float(nan_rate),
             "unknown_gender_rate": float(unknown_gender),
             "unknown_car_rate": float(unknown_car),
@@ -348,6 +383,8 @@ def generate_report(
     meta_df, inputs_df, window_status = _filter_by_time(
         meta_df, inputs_df, since=prod_since, until=prod_until
     )
+    meta_df_all = meta_df.copy()
+    inputs_df_all = inputs_df.copy()
     valid_mask = pd.Series(True, index=meta_df.index)
     if "status_code" in meta_df.columns:
         valid_mask = meta_df["status_code"].fillna(0) < 400
@@ -461,11 +498,15 @@ def generate_report(
     output_dir.mkdir(parents=True, exist_ok=True)
     report_path = output_dir / "drift_report.html"
 
-    total_calls = len(meta_df)
-    error_rate = float((meta_df.get("status_code", pd.Series(dtype=int)) >= 400).mean()) if total_calls else 0.0
-    latency_ms = meta_df.get("latency_ms", pd.Series(dtype=float)).dropna()
+    total_calls = len(meta_df_all)
+    error_series = meta_df_all.get("status_code", pd.Series(dtype=int))
+    error_rate = float((error_series >= 400).mean()) if total_calls else 0.0
+    latency_ms = meta_df_all.get("latency_ms", pd.Series(dtype=float)).dropna()
     latency_p50 = float(latency_ms.quantile(0.5)) if not latency_ms.empty else 0.0
     latency_p95 = float(latency_ms.quantile(0.95)) if not latency_ms.empty else 0.0
+    calls_with_inputs = int(inputs_df_all.notna().any(axis=1).sum()) if not inputs_df_all.empty else 0
+    calls_with_dq = int(meta_df_all.get("data_quality", pd.Series(dtype=object)).notna().sum()) if total_calls else 0
+    calls_success = int(valid_mask.sum())
 
     valid_meta = meta_df_valid
     score_series = (
@@ -504,6 +545,15 @@ def generate_report(
         _plot_prediction_rate(pred_series, pred_plot_path)
         score_plots_html += "\n<img src='plots/prediction_rate.png' />"
 
+    error_breakdown = _summarize_errors(meta_df_all[error_series >= 400])
+    if error_breakdown:
+        error_items = "\n".join(
+            f"<li>{message} ({count})</li>" for message, count in error_breakdown
+        )
+        error_html = "<ul>\n" + error_items + "\n</ul>"
+    else:
+        error_html = "<p>No error details logged.</p>"
+
     drift_flags = summary_df.get("drift_detected", pd.Series(dtype=bool)).fillna(False)
     drift_count = int(drift_flags.sum())
     overall_drift = drift_count >= max(min_drift_features, 1) and n_prod >= min_prod_samples
@@ -522,6 +572,8 @@ def generate_report(
             dq_items.append(f"<li>Invalid numeric rate: {dq_metrics.get('invalid_numeric_rate', 0.0):.2%}</li>")
         if "out_of_range_rate" in dq_metrics:
             dq_items.append(f"<li>Out-of-range rate: {dq_metrics.get('out_of_range_rate', 0.0):.2%}</li>")
+        if "outlier_rate" in dq_metrics:
+            dq_items.append(f"<li>Outlier rate: {dq_metrics.get('outlier_rate', 0.0):.2%}</li>")
         if "nan_rate" in dq_metrics:
             dq_items.append(f"<li>NaN rate (avg): {dq_metrics.get('nan_rate', 0.0):.2%}</li>")
         dq_items.append(
@@ -547,11 +599,15 @@ def generate_report(
             "<div class='badge warning'>Sample insuffisant: "
             f"{n_prod} &lt; {min_prod_samples} (resultats non fiables).</div>"
         )
-    drift_badge = (
-        "<div class='badge ok'>No drift alert</div>"
-        if not overall_drift
-        else "<div class='badge alert'>Drift alert</div>"
-    )
+    if n_prod < min_prod_samples:
+        drift_badge = (
+            "<div class='badge warning'>Drift non calcule "
+            f"(n_prod &lt; {min_prod_samples}).</div>"
+        )
+    elif overall_drift:
+        drift_badge = "<div class='badge alert'>Drift alert</div>"
+    else:
+        drift_badge = "<div class='badge ok'>No drift alert</div>"
     if not prod_since and not prod_until:
         window_info = "full_log"
     elif window_status in {"timestamp_missing", "timestamp_invalid"}:
@@ -579,11 +635,17 @@ def generate_report(
   <body>
     <h2>Production Monitoring Summary</h2>
     <ul>
-      <li>Total calls: {total_calls}</li>
+      <li>Total calls (logged): {total_calls}</li>
+      <li>Calls with inputs: {calls_with_inputs}</li>
+      <li>Calls with data quality: {calls_with_dq}</li>
+      <li>Calls success (status &lt; 400): {calls_success}</li>
+      <li>Calls usable for drift: {n_prod}</li>
       <li>Error rate: {error_rate:.2%}</li>
       <li>Latency p50: {latency_p50:.2f} ms</li>
       <li>Latency p95: {latency_p95:.2f} ms</li>
     </ul>
+    <h3>Top error reasons</h3>
+    {error_html}
     {sample_badge}
     <h2>Score Monitoring</h2>
     <ul>

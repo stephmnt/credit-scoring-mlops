@@ -20,6 +20,14 @@ from pydantic import BaseModel
 from sklearn.preprocessing import MinMaxScaler
 import joblib
 
+from src.features import (
+    add_missingness_indicators,
+    apply_outlier_clipping,
+    compute_outlier_bounds,
+    new_features_creation,
+    select_missing_indicator_columns,
+)
+
 logger = logging.getLogger("uvicorn.error")
 
 MODEL_PATH = Path(os.getenv("MODEL_PATH", "data/HistGB_final_model.pkl"))
@@ -56,11 +64,17 @@ HF_CUSTOMER_FILENAME = os.getenv("HF_CUSTOMER_FILENAME", CUSTOMER_DATA_PATH.name
 
 IGNORE_FEATURES = ["is_train", "is_test", "TARGET", "SK_ID_CURR"]
 ENGINEERED_FEATURES = [
+    "DAYS_EMPLOYED_ANOM",
     "DAYS_EMPLOYED_PERC",
     "INCOME_CREDIT_PERC",
     "INCOME_PER_PERSON",
     "ANNUITY_INCOME_PERC",
     "PAYMENT_RATE",
+    "DENOM_ZERO_DAYS_EMPLOYED_PERC",
+    "DENOM_ZERO_INCOME_CREDIT_PERC",
+    "DENOM_ZERO_INCOME_PER_PERSON",
+    "DENOM_ZERO_ANNUITY_INCOME_PERC",
+    "DENOM_ZERO_PAYMENT_RATE",
 ]
 ENGINEERED_SOURCES = [
     "DAYS_EMPLOYED",
@@ -98,6 +112,9 @@ OUTLIER_COLUMNS = [
     "AMT_REQ_CREDIT_BUREAU_YEAR",
     "AMT_REQ_CREDIT_BUREAU_QRT",
 ]
+OUTLIER_LOWER_Q = 0.01
+OUTLIER_UPPER_Q = 0.99
+MISSING_INDICATOR_MIN_RATE = float(os.getenv("MISSING_INDICATOR_MIN_RATE", "0.05"))
 
 CODE_GENDER_MAPPING = {
     "F": "F",
@@ -143,6 +160,8 @@ class PreprocessorArtifacts:
     numeric_medians: dict[str, float]
     categorical_columns: list[str]
     outlier_maxes: dict[str, float]
+    outlier_bounds: dict[str, tuple[float, float]]
+    missing_indicator_columns: list[str]
     numeric_ranges: dict[str, tuple[float, float]]
     features_to_scaled: list[str]
     scaler: MinMaxScaler
@@ -243,6 +262,7 @@ def _normalize_inputs(
     if "DAYS_EMPLOYED" in df.columns:
         values = pd.to_numeric(df["DAYS_EMPLOYED"], errors="coerce")
         sentinel_mask = values == DAYS_EMPLOYED_SENTINEL
+        df["DAYS_EMPLOYED_ANOM"] = sentinel_mask.astype(int)
         if sentinel_mask.any():
             df.loc[sentinel_mask, "DAYS_EMPLOYED"] = np.nan
 
@@ -267,6 +287,7 @@ def _build_data_quality_records(
     missing_mask = df_norm[required_cols].isna() if required_cols else pd.DataFrame(index=df_norm.index)
     invalid_masks: dict[str, pd.Series] = {}
     out_of_range_masks: dict[str, pd.Series] = {}
+    outlier_masks: dict[str, pd.Series] = {}
 
     for col in numeric_required:
         if col not in df_raw.columns:
@@ -283,6 +304,13 @@ def _build_data_quality_records(
         values = pd.to_numeric(df_norm[col], errors="coerce")
         out_of_range_masks[col] = (values < min_val) | (values > max_val)
 
+    for col, (low, high) in getattr(preprocessor, "outlier_bounds", {}).items():
+        if col not in df_norm.columns:
+            outlier_masks[col] = pd.Series(False, index=df_norm.index)
+            continue
+        values = pd.to_numeric(df_norm[col], errors="coerce")
+        outlier_masks[col] = (values < low) | (values > high)
+
     records: list[dict[str, Any]] = []
     for idx in df_norm.index:
         missing_cols = (
@@ -292,18 +320,26 @@ def _build_data_quality_records(
         )
         invalid_cols = [col for col, mask in invalid_masks.items() if mask.at[idx]]
         out_of_range_cols = [col for col, mask in out_of_range_masks.items() if mask.at[idx]]
+        outlier_cols = [col for col, mask in outlier_masks.items() if mask.at[idx]]
         unknown_cols = [col for col, mask in unknown_masks.items() if mask.at[idx]]
+        unknown_values = {
+            col: df_raw.at[idx, col]
+            for col in unknown_cols
+            if col in df_raw.columns
+        }
         nan_rate = float(missing_mask.loc[idx].mean()) if not missing_mask.empty else 0.0
-        records.append(
-            {
-                "missing_required_columns": missing_cols,
-                "invalid_numeric_columns": invalid_cols,
-                "out_of_range_columns": out_of_range_cols,
-                "unknown_categories": unknown_cols,
-                "days_employed_sentinel": bool(sentinel_mask.at[idx]) if not sentinel_mask.empty else False,
-                "nan_rate": nan_rate,
-            }
-        )
+        record = {
+            "missing_required_columns": missing_cols,
+            "invalid_numeric_columns": invalid_cols,
+            "out_of_range_columns": out_of_range_cols,
+            "outlier_columns": outlier_cols,
+            "unknown_categories": unknown_cols,
+            "days_employed_sentinel": bool(sentinel_mask.at[idx]) if not sentinel_mask.empty else False,
+            "nan_rate": nan_rate,
+        }
+        if unknown_values:
+            record["unknown_category_values"] = unknown_values
+        records.append(record)
     return records
 
 
@@ -376,6 +412,7 @@ def _log_prediction_entries(
     threshold: float | None,
     status_code: int,
     preprocessor: PreprocessorArtifacts,
+    source: str | None = None,
     data_quality: list[dict[str, Any]] | None = None,
     error: str | None = None,
 ) -> None:
@@ -400,6 +437,7 @@ def _log_prediction_entries(
             "status_code": status_code,
             "model_version": MODEL_VERSION,
             "threshold": threshold,
+            "source": source or "api",
             "inputs": inputs,
         }
         if data_quality and idx < len(data_quality):
@@ -420,25 +458,16 @@ def _log_prediction_entries(
     _append_log_entries(entries)
 
 
-def new_features_creation(df: pd.DataFrame) -> pd.DataFrame:
-    df_features = df.copy()
-    for col in ENGINEERED_SOURCES:
-        if col not in df_features.columns:
-            df_features[col] = np.nan
-    df_features["DAYS_EMPLOYED_PERC"] = df_features["DAYS_EMPLOYED"] / df_features["DAYS_BIRTH"]
-    df_features["INCOME_CREDIT_PERC"] = df_features["AMT_INCOME_TOTAL"] / df_features["AMT_CREDIT"]
-    df_features["INCOME_PER_PERSON"] = df_features["AMT_INCOME_TOTAL"] / df_features["CNT_FAM_MEMBERS"]
-    df_features["ANNUITY_INCOME_PERC"] = df_features["AMT_ANNUITY"] / df_features["AMT_INCOME_TOTAL"]
-    df_features["PAYMENT_RATE"] = df_features["AMT_ANNUITY"] / df_features["AMT_CREDIT"]
-    return df_features
-
-
 def build_preprocessor(data_path: Path) -> PreprocessorArtifacts:
     df = pd.read_parquet(data_path)
     raw_feature_columns = df.columns.tolist()
     input_feature_columns = [c for c in raw_feature_columns if c not in ["is_train", "is_test", "TARGET"]]
 
-    df = new_features_creation(df)
+    df = new_features_creation(
+        df,
+        days_employed_sentinel=DAYS_EMPLOYED_SENTINEL,
+        engineered_sources=ENGINEERED_SOURCES,
+    )
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
     missing_rate = df.isna().mean()
@@ -448,6 +477,26 @@ def build_preprocessor(data_path: Path) -> PreprocessorArtifacts:
     df = df[columns_keep]
     df = df.dropna(subset=columns_must_not_missing)
 
+    if "CODE_GENDER" in df.columns:
+        df = df[df["CODE_GENDER"] != "XNA"]
+
+    missing_indicator_columns = select_missing_indicator_columns(
+        df,
+        exclude_cols=set(IGNORE_FEATURES),
+        min_missing_rate=MISSING_INDICATOR_MIN_RATE,
+    )
+    df = add_missingness_indicators(df, missing_indicator_columns)
+
+    outlier_bounds = compute_outlier_bounds(
+        df,
+        OUTLIER_COLUMNS,
+        lower_q=OUTLIER_LOWER_Q,
+        upper_q=OUTLIER_UPPER_Q,
+    )
+    df = apply_outlier_clipping(df, outlier_bounds)
+
+    columns_keep = df.columns.tolist()
+
     numeric_cols = df.select_dtypes(include=["number"]).columns
     numeric_medians = df[numeric_cols].median().to_dict()
     df[numeric_cols] = df[numeric_cols].fillna(numeric_medians)
@@ -455,12 +504,7 @@ def build_preprocessor(data_path: Path) -> PreprocessorArtifacts:
     categorical_columns = df.select_dtypes(include=["object"]).columns.tolist()
     df[categorical_columns] = df[categorical_columns].fillna("Unknown")
 
-    if "CODE_GENDER" in df.columns:
-        df = df[df["CODE_GENDER"] != "XNA"]
-
-    outlier_maxes = {col: df[col].max() for col in OUTLIER_COLUMNS if col in df.columns}
-    for col, max_val in outlier_maxes.items():
-        df = df[df[col] != max_val]
+    outlier_maxes = {col: bounds[1] for col, bounds in outlier_bounds.items()}
 
     reduced_input_columns, selection_scores, selection_method = _compute_reduced_inputs(
         df,
@@ -487,7 +531,11 @@ def build_preprocessor(data_path: Path) -> PreprocessorArtifacts:
             required_input = _fallback_reduced_inputs(input_feature_columns)
     else:
         required_input = sorted(required_raw)
-    numeric_required = sorted(col for col in required_input if col in numeric_medians)
+    numeric_required = sorted(
+        col
+        for col in required_input
+        if col in numeric_medians and col != "SK_ID_CURR"
+    )
     correlated_imputation = _build_correlated_imputation(
         df,
         input_feature_columns=input_feature_columns,
@@ -501,6 +549,8 @@ def build_preprocessor(data_path: Path) -> PreprocessorArtifacts:
         numeric_medians={k: float(v) for k, v in numeric_medians.items()},
         categorical_columns=categorical_columns,
         outlier_maxes={k: float(v) for k, v in outlier_maxes.items()},
+        outlier_bounds={k: (float(v[0]), float(v[1])) for k, v in outlier_bounds.items()},
+        missing_indicator_columns=missing_indicator_columns,
         numeric_ranges=numeric_ranges,
         features_to_scaled=features_to_scaled,
         scaler=scaler,
@@ -554,8 +604,27 @@ def build_fallback_preprocessor() -> PreprocessorArtifacts:
         ]
     )
 
-    df = new_features_creation(base)
+    df = new_features_creation(
+        base,
+        days_employed_sentinel=DAYS_EMPLOYED_SENTINEL,
+        engineered_sources=ENGINEERED_SOURCES,
+    )
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+    missing_indicator_columns = select_missing_indicator_columns(
+        df,
+        exclude_cols=set(IGNORE_FEATURES),
+        min_missing_rate=MISSING_INDICATOR_MIN_RATE,
+    )
+    df = add_missingness_indicators(df, missing_indicator_columns)
+
+    outlier_bounds = compute_outlier_bounds(
+        df,
+        OUTLIER_COLUMNS,
+        lower_q=OUTLIER_LOWER_Q,
+        upper_q=OUTLIER_UPPER_Q,
+    )
+    df = apply_outlier_clipping(df, outlier_bounds)
 
     columns_keep = df.columns.tolist()
     columns_must_not_missing = [col for col in columns_keep if col not in IGNORE_FEATURES]
@@ -579,7 +648,9 @@ def build_fallback_preprocessor() -> PreprocessorArtifacts:
     required_raw.update(col for col in columns_must_not_missing if col in input_feature_columns)
     required_raw.add("SK_ID_CURR")
     required_input = _fallback_reduced_inputs(input_feature_columns)
-    numeric_required = sorted(col for col in required_input if col in numeric_medians)
+    numeric_required = sorted(
+        col for col in required_input if col in numeric_medians and col != "SK_ID_CURR"
+    )
 
     numeric_ranges = {col: (float(df[col].min()), float(df[col].max())) for col in numeric_cols}
 
@@ -588,7 +659,9 @@ def build_fallback_preprocessor() -> PreprocessorArtifacts:
         columns_must_not_missing=columns_must_not_missing,
         numeric_medians={k: float(v) for k, v in numeric_medians.items()},
         categorical_columns=categorical_columns,
-        outlier_maxes={},
+        outlier_maxes={k: float(v[1]) for k, v in outlier_bounds.items()},
+        outlier_bounds={k: (float(v[0]), float(v[1])) for k, v in outlier_bounds.items()},
+        missing_indicator_columns=missing_indicator_columns,
         numeric_ranges=numeric_ranges,
         features_to_scaled=features_to_scaled,
         scaler=scaler,
@@ -633,7 +706,9 @@ def load_preprocessor(data_path: Path, artifacts_path: Path) -> PreprocessorArti
             updated = True
         if not hasattr(preprocessor, "numeric_required_columns"):
             preprocessor.numeric_required_columns = sorted(
-                col for col in preprocessor.required_input_columns if col in preprocessor.numeric_medians
+                col
+                for col in preprocessor.required_input_columns
+                if col in preprocessor.numeric_medians and col != "SK_ID_CURR"
             )
             updated = True
         if not hasattr(preprocessor, "numeric_ranges"):
@@ -646,6 +721,56 @@ def load_preprocessor(data_path: Path, artifacts_path: Path) -> PreprocessorArti
                     raise RuntimeError(f"Data file not found to rebuild preprocessor: {data_path}")
                 preprocessor = build_preprocessor(data_path)
                 updated = True
+        needs_missing_indicators = (
+            not hasattr(preprocessor, "missing_indicator_columns")
+            or not preprocessor.missing_indicator_columns
+        )
+        needs_outlier_bounds = (
+            not hasattr(preprocessor, "outlier_bounds") or not preprocessor.outlier_bounds
+        )
+        prepared_df = None
+        if (needs_missing_indicators or needs_outlier_bounds) and data_path.exists():
+            prepared_df = pd.read_parquet(data_path)
+            prepared_df = new_features_creation(
+                prepared_df,
+                days_employed_sentinel=DAYS_EMPLOYED_SENTINEL,
+                engineered_sources=ENGINEERED_SOURCES,
+            )
+            prepared_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+            if preprocessor.columns_keep:
+                prepared_df = prepared_df[preprocessor.columns_keep]
+            if preprocessor.columns_must_not_missing:
+                prepared_df = prepared_df.dropna(subset=preprocessor.columns_must_not_missing)
+            if "CODE_GENDER" in prepared_df.columns:
+                prepared_df = prepared_df[prepared_df["CODE_GENDER"] != "XNA"]
+        if needs_missing_indicators:
+            if prepared_df is not None:
+                preprocessor.missing_indicator_columns = select_missing_indicator_columns(
+                    prepared_df,
+                    exclude_cols=set(IGNORE_FEATURES),
+                    min_missing_rate=MISSING_INDICATOR_MIN_RATE,
+                )
+            else:
+                preprocessor.missing_indicator_columns = []
+            updated = True
+        if needs_outlier_bounds:
+            if prepared_df is not None:
+                preprocessor.outlier_bounds = compute_outlier_bounds(
+                    prepared_df,
+                    OUTLIER_COLUMNS,
+                    lower_q=OUTLIER_LOWER_Q,
+                    upper_q=OUTLIER_UPPER_Q,
+                )
+            else:
+                preprocessor.outlier_bounds = {}
+                for col, max_val in getattr(preprocessor, "outlier_maxes", {}).items():
+                    min_val = None
+                    if hasattr(preprocessor, "numeric_ranges") and col in preprocessor.numeric_ranges:
+                        min_val = preprocessor.numeric_ranges[col][0]
+                    if min_val is None:
+                        min_val = float("-inf")
+                    preprocessor.outlier_bounds[col] = (float(min_val), float(max_val))
+            updated = True
         if USE_REDUCED_INPUTS:
             reduced = _reduce_input_columns(preprocessor)
             if preprocessor.required_input_columns != reduced:
@@ -658,7 +783,9 @@ def load_preprocessor(data_path: Path, artifacts_path: Path) -> PreprocessorArti
                 required_updated = True
                 updated = True
         desired_numeric_required = sorted(
-            col for col in preprocessor.required_input_columns if col in preprocessor.numeric_medians
+            col
+            for col in preprocessor.required_input_columns
+            if col in preprocessor.numeric_medians and col != "SK_ID_CURR"
         )
         if getattr(preprocessor, "numeric_required_columns", None) != desired_numeric_required:
             preprocessor.numeric_required_columns = desired_numeric_required
@@ -890,7 +1017,11 @@ def _compute_reduced_inputs_from_data(
     if not data_path.exists():
         return _fallback_reduced_inputs(preprocessor.input_feature_columns), {}, "default"
     df = pd.read_parquet(data_path)
-    df = new_features_creation(df)
+    df = new_features_creation(
+        df,
+        days_employed_sentinel=DAYS_EMPLOYED_SENTINEL,
+        engineered_sources=ENGINEERED_SOURCES,
+    )
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
     if preprocessor.columns_keep:
@@ -908,9 +1039,25 @@ def _compute_reduced_inputs_from_data(
     if "CODE_GENDER" in df.columns:
         df = df[df["CODE_GENDER"] != "XNA"]
 
-    for col, max_val in preprocessor.outlier_maxes.items():
-        if col in df.columns:
-            df = df[df[col] != max_val]
+    if getattr(preprocessor, "missing_indicator_columns", None):
+        df = add_missingness_indicators(df, preprocessor.missing_indicator_columns)
+    else:
+        df = add_missingness_indicators(
+            df,
+            select_missing_indicator_columns(
+                df,
+                exclude_cols=set(IGNORE_FEATURES),
+                min_missing_rate=MISSING_INDICATOR_MIN_RATE,
+            ),
+        )
+
+    outlier_bounds = getattr(preprocessor, "outlier_bounds", {}) or compute_outlier_bounds(
+        df,
+        OUTLIER_COLUMNS,
+        lower_q=OUTLIER_LOWER_Q,
+        upper_q=OUTLIER_UPPER_Q,
+    )
+    df = apply_outlier_clipping(df, outlier_bounds)
 
     return _compute_reduced_inputs(df, input_feature_columns=preprocessor.input_feature_columns)
 
@@ -920,7 +1067,11 @@ def _compute_correlated_imputation(
     preprocessor: PreprocessorArtifacts,
 ) -> dict[str, dict[str, float | str]]:
     df = pd.read_parquet(data_path)
-    df = new_features_creation(df)
+    df = new_features_creation(
+        df,
+        days_employed_sentinel=DAYS_EMPLOYED_SENTINEL,
+        engineered_sources=ENGINEERED_SOURCES,
+    )
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
     df = df[preprocessor.columns_keep]
@@ -936,9 +1087,25 @@ def _compute_correlated_imputation(
     if "CODE_GENDER" in df.columns:
         df = df[df["CODE_GENDER"] != "XNA"]
 
-    for col, max_val in preprocessor.outlier_maxes.items():
-        if col in df.columns:
-            df = df[df[col] != max_val]
+    if getattr(preprocessor, "missing_indicator_columns", None):
+        df = add_missingness_indicators(df, preprocessor.missing_indicator_columns)
+    else:
+        df = add_missingness_indicators(
+            df,
+            select_missing_indicator_columns(
+                df,
+                exclude_cols=set(IGNORE_FEATURES),
+                min_missing_rate=MISSING_INDICATOR_MIN_RATE,
+            ),
+        )
+
+    outlier_bounds = getattr(preprocessor, "outlier_bounds", {}) or compute_outlier_bounds(
+        df,
+        OUTLIER_COLUMNS,
+        lower_q=OUTLIER_LOWER_Q,
+        upper_q=OUTLIER_UPPER_Q,
+    )
+    df = apply_outlier_clipping(df, outlier_bounds)
 
     return _build_correlated_imputation(
         df,
@@ -1048,10 +1215,29 @@ def preprocess_input(df_raw: pd.DataFrame, artifacts: PreprocessorArtifacts) -> 
     if "TARGET" not in df.columns:
         df["TARGET"] = 0
 
-    df = new_features_creation(df)
+    df = new_features_creation(
+        df,
+        days_employed_sentinel=DAYS_EMPLOYED_SENTINEL,
+        engineered_sources=ENGINEERED_SOURCES,
+    )
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
     df = df.reindex(columns=artifacts.columns_keep, fill_value=np.nan)
+
+    indicator_cols = getattr(artifacts, "missing_indicator_columns", None) or select_missing_indicator_columns(
+        df,
+        exclude_cols=set(IGNORE_FEATURES),
+        min_missing_rate=MISSING_INDICATOR_MIN_RATE,
+    )
+    df = add_missingness_indicators(df, indicator_cols)
+
+    outlier_bounds = getattr(artifacts, "outlier_bounds", {}) or compute_outlier_bounds(
+        df,
+        OUTLIER_COLUMNS,
+        lower_q=OUTLIER_LOWER_Q,
+        upper_q=OUTLIER_UPPER_Q,
+    )
+    df = apply_outlier_clipping(df, outlier_bounds)
 
     _apply_correlated_imputation(df, artifacts)
 
@@ -1072,21 +1258,85 @@ def preprocess_input(df_raw: pd.DataFrame, artifacts: PreprocessorArtifacts) -> 
             detail={"message": "CODE_GENDER cannot be 'XNA' based on training rules."},
         )
 
-    for col, max_val in artifacts.outlier_maxes.items():
-        if col in df.columns and (df[col] >= max_val).any():
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "message": "Input contains outlier values removed during training.",
-                    "outlier_columns": [col],
-                },
-            )
-
     df_hot = pd.get_dummies(df, columns=artifacts.categorical_columns)
     df_hot = df_hot.reindex(columns=artifacts.features_to_scaled, fill_value=0)
 
     scaled = artifacts.scaler.transform(df_hot)
     return pd.DataFrame(scaled, columns=artifacts.features_to_scaled, index=df.index)
+
+
+def _prepare_pipeline_input(
+    df_raw: pd.DataFrame,
+    artifacts: PreprocessorArtifacts,
+    model: Any,
+) -> pd.DataFrame:
+    df = df_raw.copy()
+
+    for col in artifacts.required_input_columns:
+        if col not in df.columns:
+            df[col] = np.nan
+
+    allow_missing = {"DAYS_EMPLOYED"}
+    _ensure_required_columns(df, artifacts.required_input_columns, allow_missing=allow_missing)
+    _validate_numeric_inputs(df, artifacts.numeric_required_columns)
+    _validate_numeric_ranges(
+        df,
+        {k: v for k, v in artifacts.numeric_ranges.items() if k in artifacts.numeric_required_columns},
+    )
+
+    df["is_train"] = 0
+    df["is_test"] = 1
+    if "TARGET" not in df.columns:
+        df["TARGET"] = 0
+
+    df = new_features_creation(
+        df,
+        days_employed_sentinel=DAYS_EMPLOYED_SENTINEL,
+        engineered_sources=ENGINEERED_SOURCES,
+    )
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+    df = df.reindex(columns=artifacts.columns_keep, fill_value=np.nan)
+
+    indicator_cols = getattr(artifacts, "missing_indicator_columns", None) or select_missing_indicator_columns(
+        df,
+        exclude_cols=set(IGNORE_FEATURES),
+        min_missing_rate=MISSING_INDICATOR_MIN_RATE,
+    )
+    df = add_missingness_indicators(df, indicator_cols)
+
+    outlier_bounds = getattr(artifacts, "outlier_bounds", {}) or compute_outlier_bounds(
+        df,
+        OUTLIER_COLUMNS,
+        lower_q=OUTLIER_LOWER_Q,
+        upper_q=OUTLIER_UPPER_Q,
+    )
+    df = apply_outlier_clipping(df, outlier_bounds)
+
+    if "CODE_GENDER" in df.columns and (df["CODE_GENDER"] == "XNA").any():
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "CODE_GENDER cannot be 'XNA' based on training rules."},
+        )
+
+    expected_cols = None
+    if hasattr(model, "named_steps"):
+        preprocessor = model.named_steps.get("preprocessing")
+        expected_cols = getattr(preprocessor, "feature_names_in_", None)
+    if expected_cols is None:
+        expected_cols = [c for c in artifacts.input_feature_columns if c not in IGNORE_FEATURES]
+
+    return df.reindex(columns=expected_cols, fill_value=np.nan)
+
+
+def prepare_inference_features(
+    df_raw: pd.DataFrame,
+    artifacts: PreprocessorArtifacts,
+    model: Any,
+) -> pd.DataFrame:
+    if hasattr(model, "named_steps") and model.named_steps.get("preprocessing") is not None:
+        return _prepare_pipeline_input(df_raw, artifacts, model)
+    return preprocess_input(df_raw, artifacts)
 
 
 @app.on_event("startup")
@@ -1183,9 +1433,19 @@ def features(include_all: bool = Query(default=False)) -> dict[str, Any]:
         for col in preprocessor.required_input_columns
         if col in scores
     }
+    missing_indicator_features = [
+        f"is_missing_{col}"
+        for col in getattr(preprocessor, "missing_indicator_columns", []) or []
+    ]
+    outlier_indicator_features = [
+        f"is_outlier_{col}"
+        for col in getattr(preprocessor, "outlier_bounds", {}) or {}
+    ]
     payload = {
         "required_input_features": preprocessor.required_input_columns,
         "engineered_features": ENGINEERED_FEATURES,
+        "missing_indicator_features_count": len(missing_indicator_features),
+        "outlier_indicator_features_count": len(outlier_indicator_features),
         "model_features_count": len(preprocessor.features_to_scaled),
         "feature_selection_method": preprocessor.feature_selection_method,
         "feature_selection_top_n": FEATURE_SELECTION_TOP_N,
@@ -1198,6 +1458,8 @@ def features(include_all: bool = Query(default=False)) -> dict[str, Any]:
     if include_all:
         payload["input_features"] = preprocessor.input_feature_columns
         payload["optional_input_features"] = optional_features
+        payload["missing_indicator_features"] = missing_indicator_features
+        payload["outlier_indicator_features"] = outlier_indicator_features
     else:
         payload["input_features"] = preprocessor.required_input_columns
         payload["optional_input_features"] = []
@@ -1236,7 +1498,12 @@ def logs(
     return Response(content="".join(lines), media_type="application/x-ndjson")
 
 
-def _predict_records(records: list[dict[str, Any]], threshold: float | None) -> dict[str, Any]:
+def _predict_records(
+    records: list[dict[str, Any]],
+    threshold: float | None,
+    *,
+    source: str | None = None,
+) -> dict[str, Any]:
     model = app.state.model
     preprocessor: PreprocessorArtifacts = app.state.preprocessor
     request_id = str(uuid.uuid4())
@@ -1260,7 +1527,7 @@ def _predict_records(records: list[dict[str, Any]], threshold: float | None) -> 
             raise HTTPException(status_code=422, detail={"message": "SK_ID_CURR is required."})
 
         sk_ids = df_norm["SK_ID_CURR"].tolist()
-        features = preprocess_input(df_norm, preprocessor)
+        features = prepare_inference_features(df_norm, preprocessor, model)
 
         if hasattr(model, "predict_proba"):
             proba = model.predict_proba(features)[:, 1]
@@ -1283,6 +1550,7 @@ def _predict_records(records: list[dict[str, Any]], threshold: float | None) -> 
                 threshold=use_threshold,
                 status_code=200,
                 preprocessor=preprocessor,
+                source=source,
                 data_quality=dq_records,
             )
             return {"predictions": results, "threshold": use_threshold}
@@ -1304,6 +1572,7 @@ def _predict_records(records: list[dict[str, Any]], threshold: float | None) -> 
             threshold=None,
             status_code=200,
             preprocessor=preprocessor,
+            source=source,
             data_quality=dq_records,
         )
         return {"predictions": results, "threshold": None}
@@ -1318,6 +1587,7 @@ def _predict_records(records: list[dict[str, Any]], threshold: float | None) -> 
             threshold=threshold,
             status_code=exc.status_code,
             preprocessor=preprocessor,
+            source=source,
             data_quality=dq_records if "dq_records" in locals() else None,
             error=json.dumps(detail, ensure_ascii=True),
         )
@@ -1332,6 +1602,7 @@ def _predict_records(records: list[dict[str, Any]], threshold: float | None) -> 
             threshold=threshold,
             status_code=500,
             preprocessor=preprocessor,
+            source=source,
             data_quality=dq_records if "dq_records" in locals() else None,
             error=str(exc),
         )
@@ -1342,16 +1613,18 @@ def _predict_records(records: list[dict[str, Any]], threshold: float | None) -> 
 def predict(
     payload: PredictionRequest,
     threshold: float | None = Query(default=None, ge=0.0, le=1.0),
+    x_client_source: str | None = Header(default=None, alias="X-Client-Source"),
 ) -> dict[str, Any]:
     records = payload.data if isinstance(payload.data, list) else [payload.data]
-    return _predict_records(records, threshold)
+    return _predict_records(records, threshold, source=x_client_source)
 
 
 @app.post("/predict-minimal")
 def predict_minimal(
     payload: MinimalPredictionRequest,
     threshold: float | None = Query(default=None, ge=0.0, le=1.0),
+    x_client_source: str | None = Header(default=None, alias="X-Client-Source"),
 ) -> dict[str, Any]:
     preprocessor: PreprocessorArtifacts = app.state.preprocessor
     record = _build_minimal_record(payload, preprocessor)
-    return _predict_records([record], threshold)
+    return _predict_records([record], threshold, source=x_client_source)

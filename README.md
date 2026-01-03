@@ -14,6 +14,18 @@ pinned: false
 [![GitHub Release Date](https://img.shields.io/github/release-date/stephmnt/credit-scoring-mlops?display_date=published_at&style=flat-square)](https://github.com/stephmnt/credit-scoring-mlops/releases)
 [![project_license](https://img.shields.io/github/license/stephmnt/credit-scoring-mlops.svg)](https://github.com/stephmnt/credit-scoring-mlops/blob/main/LICENSE)
 
+## Structure rapide
+
+- `app/` API FastAPI + preprocessing inference
+- `monitoring/` rapport drift + Streamlit
+- `notebooks/` exploration + modelisation
+- `src/` utilitaires ML (feature engineering / pipeline)
+- `docs/` preuves & rapports (monitoring, perf)
+- `tests/` tests unitaires/integration
+
+Le feature engineering est factorise dans `src/features.py` et reutilise
+par le notebook et l'API pour eviter le training-serving skew.
+
 ## Lancer MLFlow
 
 Le notebook est configure pour utiliser un serveur MLflow local (`http://127.0.0.1:5000`).
@@ -75,6 +87,17 @@ pytest -q
 uvicorn app.main:app --reload --port 7860
 ```
 
+### Configuration (.env)
+
+Dupliquez `.env.example` en `.env` si vous voulez surcharger les chemins,
+seuils ou sources Hugging Face.
+Le seuil `MISSING_INDICATOR_MIN_RATE` limite les colonnes `is_missing_*`
+aux features avec un taux de NaN >= 5% (par defaut).
+
+```shell
+cp .env.example .env
+```
+
 ### Environnement Poetry (livrable)
 
 Le livrable inclut `pyproject.toml`, aligne sur `requirements.txt`. Si besoin :
@@ -87,7 +110,7 @@ poetry run uvicorn app.main:app --reload --port 7860
 
 Important : le modele `HistGB_final_model.pkl` doit etre regenere avec la
 version de scikit-learn definie dans `requirements.txt` / `pyproject.toml`
-(re-execution de `P6_MANET_Stephane_notebook_modélisation.ipynb`, cellule de
+(re-execution de `notebooks/P6_MANET_Stephane_notebook_modélisation.ipynb`, cellule de
 sauvegarde pickle).
 
 ### Exemple d'input (schema + valeurs)
@@ -158,10 +181,13 @@ Variables utiles :
 ### Data contract (validation)
 
 - Types numeriques stricts (invalides -> 422).
-- Ranges numeriques (min/max entrainement) controles.
+- Ranges numeriques (min/max entrainement) controles, hors `SK_ID_CURR` (ID).
 - Categoriels normalises: `CODE_GENDER` -> {`F`, `M`}, `FLAG_OWN_CAR` -> {`Y`, `N`}.
-- Sentinelle `DAYS_EMPLOYED=365243` remplacee par NaN.
-- Logs enrichis via `data_quality` pour distinguer drift vs qualite de donnees.
+- Sentinelle `DAYS_EMPLOYED=365243` remplacee par NaN + flag `DAYS_EMPLOYED_ANOM`.
+- Ratios securises (division par zero) + flags `DENOM_ZERO_*`.
+- Outliers clippees (p1/p99) + flags `is_outlier_*`.
+- Missingness indicators `is_missing_*` pour les numeriques avec taux de NaN >= 5%.
+- Logs enrichis via `data_quality` et `source` pour distinguer drift vs qualite de donnees.
 
 ### Interface Gradio (scoring)
 
@@ -186,13 +212,13 @@ variables suivantes sont definies :
 
 Exemple (un seul repo dataset avec 3 fichiers) :
 
-- `HF_MODEL_REPO_ID=stephmnt/credit-scoring-mlops-assets`
+- `HF_MODEL_REPO_ID=stephmnt/assets-credit-scoring-mlops`
 - `HF_MODEL_REPO_TYPE=dataset`
 - `HF_MODEL_FILENAME=HistGB_final_model.pkl`
-- `HF_PREPROCESSOR_REPO_ID=stephmnt/credit-scoring-mlops-assets`
+- `HF_PREPROCESSOR_REPO_ID=stephmnt/assets-credit-scoring-mlops`
 - `HF_PREPROCESSOR_REPO_TYPE=dataset`
 - `HF_PREPROCESSOR_FILENAME=preprocessor.joblib`
-- `HF_CUSTOMER_REPO_ID=stephmnt/credit-scoring-mlops-assets`
+- `HF_CUSTOMER_REPO_ID=stephmnt/assets-credit-scoring-mlops`
 - `HF_CUSTOMER_REPO_TYPE=dataset`
 - `HF_CUSTOMER_FILENAME=data_final.parquet`
 
@@ -311,8 +337,11 @@ Variables utiles :
 - `LOG_HASH_SK_ID=1` pour anonymiser `SK_ID_CURR`
 
 Les logs incluent un bloc `data_quality` par requete (champs manquants,
-types invalides, out-of-range, categories inconnues, sentinelle
-`DAYS_EMPLOYED`).
+types invalides, out-of-range, outliers, categories inconnues, sentinelle
+`DAYS_EMPLOYED`) et un champ `source` (api/gradio/etc.).
+
+Astuce : vous pouvez passer un header `X-Client-Source` pour tagger la source
+des requetes (ex: `gradio`, `test`, `batch`).
 
 Exemple local :
 
@@ -359,6 +388,7 @@ Robustesse integree:
 - Categoriels: PSI avec lissage (`--psi-eps`) + categories rares regroupees (OTHER).
 - Numeriques: KS corrige par FDR (Benjamini-Hochberg, `--fdr-alpha`).
 - Sentinel `DAYS_EMPLOYED`: converti en NaN + taux suivi.
+- Outliers: clipping p1/p99 + taux via `data_quality`.
 
 Le rapport inclut aussi la distribution des scores predits et le taux de prediction
 (option `--score-bins` pour ajuster le nombre de bins), ainsi qu'une section
