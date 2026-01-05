@@ -6,7 +6,8 @@ Mesurer la latence d'inference, identifier les goulots d'etranglement et propose
 
 ## Setup
 
-- Script: `profiling/profile_inference.py`
+- Script (archivé): `dev_archive/profiling/profile_inference.py`
+- Workflow courant: notebook modélisation (section TODO 5)
 - Donnees: `data/data_final.parquet` (echantillon)
 - Parametres: `--sample-size 500 --batch-size 100 --runs 2`
 - Modele: `HistGB_final_model.pkl`

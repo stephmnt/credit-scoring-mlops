@@ -87,6 +87,17 @@ pytest -q
 uvicorn app.main:app --reload --port 7860
 ```
 
+### Workflow DEV (notebooks)
+
+Ordre recommande (dev uniquement) :
+
+1. `notebooks/P6_MANET_Stephane_notebook_exploration.ipynb` → genere `data/data_final.parquet` (ecrase).
+2. `notebooks/P6_MANET_Stephane_notebook_compare_tuning_mlflow.ipynb` → compare+tuning, log MLflow, ecrit `reports/best_model.json`.
+3. `notebooks/P6_MANET_Stephane_notebook_modélisation.ipynb` → rebuild preprocessor, entraine le modele final, exporte `data/<model>_final_model.pkl`.
+4. Lancer manuellement le workflow `deploy-assets.yml` pour pousser `data/*_final_model.pkl`.
+
+Note : ces notebooks restent dev-only. Le code prod reste dans `app/` et `monitoring/`.
+
 ### Configuration (.env)
 
 Dupliquez `.env.example` en `.env` si vous voulez surcharger les chemins,
@@ -108,7 +119,7 @@ poetry run pytest -q
 poetry run uvicorn app.main:app --reload --port 7860
 ```
 
-Important : le modele `HistGB_final_model.pkl` doit etre regenere avec la
+Important : le modele `*_final_model.pkl` doit etre regenere avec la
 version de scikit-learn definie dans `requirements.txt` / `pyproject.toml`
 (re-execution de `notebooks/P6_MANET_Stephane_notebook_modélisation.ipynb`, cellule de
 sauvegarde pickle).
@@ -214,7 +225,7 @@ Exemple (un seul repo dataset avec 3 fichiers) :
 
 - `HF_MODEL_REPO_ID=stephmnt/assets-credit-scoring-mlops`
 - `HF_MODEL_REPO_TYPE=dataset`
-- `HF_MODEL_FILENAME=HistGB_final_model.pkl`
+- `HF_MODEL_FILENAME=histgb_final_model.pkl` (ou `lgbm_final_model.pkl` / `xgb_final_model.pkl`)
 - `HF_PREPROCESSOR_REPO_ID=stephmnt/assets-credit-scoring-mlops`
 - `HF_PREPROCESSOR_REPO_TYPE=dataset`
 - `HF_PREPROCESSOR_FILENAME=preprocessor.joblib`
@@ -409,12 +420,8 @@ Captures (snapshot local du reporting + stockage):
 
 Profiling et benchmark d'inference (cProfile + latence) :
 
-```shell
-python profiling/profile_inference.py \
-  --sample-size 2000 \
-  --batch-size 128 \
-  --runs 3
-```
+- Desormais via le notebook modélisation (section TODO 5).
+- L'ancien script est archive dans `dev_archive/profiling/profile_inference.py`.
 
 Sorties:
 

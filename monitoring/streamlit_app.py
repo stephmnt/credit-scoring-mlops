@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from monitoring.drift_report import generate_report, _load_logs
+from monitoring.drift_report_old import generate_report, _load_logs
 
 
 def _load_logs_safe(log_path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:

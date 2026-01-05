@@ -46,24 +46,23 @@ jobs:
           repo_type = os.environ["HF_REPO_TYPE"]
           token = os.environ["HF_TOKEN"]
           
-          files = {
-              "data/HistGB_final_model.pkl": "HistGB_final_model.pkl",
-              "artifacts/preprocessor.joblib": "preprocessor.joblib",
-              "data/data_final.parquet": "data_final.parquet",
-          }
+          candidates = sorted(Path("data").glob("*_final_model.pkl"))
+          if not candidates:
+              raise SystemExit("Missing model file: data/*_final_model.pkl")
+          if len(candidates) > 1:
+              names = ", ".join(path.name for path in candidates)
+              raise SystemExit(f"Multiple *_final_model.pkl files found: {names}")
+          model_path = candidates[0]
           
           api = HfApi()
-          for local_path, remote_name in files.items():
-              path = Path(local_path)
-              if not path.exists():
-                  raise SystemExit(f"Missing file: {path}")
+          for path in [model_path]:
               api.upload_file(
                   path_or_fileobj=str(path),
-                  path_in_repo=remote_name,
+                  path_in_repo=path.name,
                   repo_id=repo_id,
                   repo_type=repo_type,
                   token=token,
-                  commit_message=f"Update {remote_name}",
+                  commit_message=f"Update {path.name}",
               )
           print("Assets uploaded.")
           PY

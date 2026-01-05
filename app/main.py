@@ -30,7 +30,23 @@ from src.features import (
 
 logger = logging.getLogger("uvicorn.error")
 
-MODEL_PATH = Path(os.getenv("MODEL_PATH", "data/HistGB_final_model.pkl"))
+def _resolve_model_path() -> Path:
+    env_path = os.getenv("MODEL_PATH")
+    if env_path:
+        return Path(env_path)
+    candidates = sorted(Path("data").glob("*_final_model.pkl"))
+    if len(candidates) == 1:
+        return candidates[0]
+    if candidates:
+        logger.warning(
+            "Multiple *_final_model.pkl files found; set MODEL_PATH explicitly. Using %s",
+            candidates[0],
+        )
+        return candidates[0]
+    return Path("data/histgb_final_model.pkl")
+
+
+MODEL_PATH = _resolve_model_path()
 DATA_PATH = Path(os.getenv("DATA_PATH", "data/data_final.parquet"))
 ARTIFACTS_PATH = Path(os.getenv("ARTIFACTS_PATH", "artifacts/preprocessor.joblib"))
 DEFAULT_THRESHOLD = float(os.getenv("PREDICTION_THRESHOLD", "0.5"))
@@ -1497,6 +1513,21 @@ def logs(
 
     return Response(content="".join(lines), media_type="application/x-ndjson")
 
+def _align_features_to_model(features: pd.DataFrame, model: Any) -> pd.DataFrame:
+    expected = getattr(model, "feature_names_in_", None)
+    if expected is None:
+        return features
+    expected = list(expected)
+
+    extra = [c for c in features.columns if c not in expected]
+    missing = [c for c in expected if c not in features.columns]
+    if extra or missing:
+        logger.warning(
+            "Feature mismatch: extra=%s missing=%s",
+            extra[:15],
+            missing[:15],
+        )
+    return features.reindex(columns=expected, fill_value=0)
 
 def _predict_records(
     records: list[dict[str, Any]],
@@ -1528,6 +1559,7 @@ def _predict_records(
 
         sk_ids = df_norm["SK_ID_CURR"].tolist()
         features = prepare_inference_features(df_norm, preprocessor, model)
+        features = _align_features_to_model(features, model)
 
         if hasattr(model, "predict_proba"):
             proba = model.predict_proba(features)[:, 1]

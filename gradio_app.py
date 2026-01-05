@@ -8,8 +8,12 @@ import pandas as pd
 from fastapi import HTTPException
 
 from app.main import (
+    DAYS_EMPLOYED_SENTINEL,
+    ENGINEERED_SOURCES,
+    MODEL_VERSION,
     MinimalPredictionRequest,
     app,
+    new_features_creation,
     prepare_inference_features,
     predict_minimal,
     startup_event,
@@ -45,7 +49,7 @@ def _shap_error_table(message: str) -> pd.DataFrame:
         [
             {
                 "feature": message,
-                "value": np.nan,
+                "raw_value": np.nan,
                 "shap_value": np.nan,
             }
         ]
@@ -63,12 +67,81 @@ def _extract_shap_values(shap_values: Any) -> np.ndarray:
     return values
 
 
+def _clean_raw_value(value: Any) -> Any:
+    if value is None or pd.isna(value):
+        return None
+    if isinstance(value, (np.integer, np.floating)):
+        return value.item()
+    return value
+
+
+def _strip_feature_prefix(feature_name: str) -> str:
+    return feature_name.split("__", 1)[1] if "__" in feature_name else feature_name
+
+
+def _lookup_raw_value(feature_name: str, raw_df: pd.DataFrame, preprocessor) -> Any:
+    cleaned_name = _strip_feature_prefix(feature_name)
+    if cleaned_name in raw_df.columns:
+        return raw_df.at[0, cleaned_name]
+    for prefix in ("is_missing_", "is_outlier_"):
+        if cleaned_name.startswith(prefix):
+            base = cleaned_name[len(prefix):]
+            if base in raw_df.columns:
+                return raw_df.at[0, base]
+    for col in getattr(preprocessor, "categorical_columns", []):
+        if cleaned_name.startswith(f"{col}_") and col in raw_df.columns:
+            return raw_df.at[0, col]
+    return None
+
+def _align_features_to_model(X: Any, model: Any) -> Any:
+    expected = getattr(model, "feature_names_in_", None)
+    if expected is None:
+        return X
+    if isinstance(X, pd.DataFrame):
+        return X.reindex(columns=list(expected), fill_value=0)
+    return X
+
+def _model_family(model: Any) -> str:
+    name = type(model).__name__.lower()
+    if "xgb" in name:
+        return "xgb"
+    if "lgbm" in name or "lightgbm" in name:
+        return "lgbm"
+    if "histgradientboosting" in name:
+        return "histgb"
+    return "unknown"
+
+def _xgb_pred_contribs(estimator: Any, X: Any) -> np.ndarray:
+    import xgboost as xgb
+
+    if isinstance(X, pd.DataFrame):
+        dm = xgb.DMatrix(X, feature_names=list(X.columns))
+    else:
+        dm = xgb.DMatrix(np.asarray(X))
+
+    booster = estimator.get_booster() if hasattr(estimator, "get_booster") else estimator
+    contrib = booster.predict(dm, pred_contribs=True)
+    return np.asarray(contrib)[:, :-1]
+
+
+def _lgbm_pred_contribs(estimator: Any, X: Any) -> np.ndarray:
+    contrib = estimator.predict(X, pred_contrib=True)
+    return np.asarray(contrib)[:, :-1]
+
+
 def _compute_shap_top_features(record: dict[str, Any], top_k: int = 10) -> pd.DataFrame:
     preprocessor = app.state.preprocessor
     model = app.state.model
     df_raw = pd.DataFrame.from_records([record])
     df_norm, _, _ = _normalize_inputs(df_raw, preprocessor)
+    raw_reference = new_features_creation(
+        df_norm,
+        days_employed_sentinel=DAYS_EMPLOYED_SENTINEL,
+        engineered_sources=ENGINEERED_SOURCES,
+    )
     features = prepare_inference_features(df_norm, preprocessor, model)
+    features = _align_features_to_model(features, model)
+
     try:
         import shap
     except ImportError:
@@ -96,19 +169,53 @@ def _compute_shap_top_features(record: dict[str, Any], top_k: int = 10) -> pd.Da
         if feature_names is not None:
             X_shap = pd.DataFrame(X_shap, columns=feature_names)
 
-    explainer = getattr(app.state, "shap_explainer", None)
-    if explainer is None:
-        try:
-            explainer = shap.TreeExplainer(estimator)
-        except Exception:
-            explainer = shap.Explainer(estimator, X_shap)
-        app.state.shap_explainer = explainer
+    family = _model_family(estimator)
 
+    values: np.ndarray | None = None
+
+    # 1) Contributions natives (meilleur choix pour XGB/LGBM)
     try:
-        explanation = explainer(X_shap)
-        values = _extract_shap_values(explanation.values)
+        if family == "xgb":
+            values = _xgb_pred_contribs(estimator, X_shap)
+        elif family == "lgbm":
+            values = _lgbm_pred_contribs(estimator, X_shap)
     except Exception:
-        values = _extract_shap_values(explainer.shap_values(X_shap)) # type: ignore
+        values = None
+
+    # 2) Fallback SHAP (utile surtout pour HistGB / inconnus)
+    if values is None:
+        cache = getattr(app.state, "shap_explainer_cache", {})
+        key = f"{MODEL_VERSION}:{type(estimator).__name__}"
+        explainer = cache.get(key)
+
+        if explainer is None:
+            try:
+                import shap
+                predict_fn = (
+                    (lambda X: estimator.predict_proba(X)[:, 1])
+                    if hasattr(estimator, "predict_proba")
+                    else (lambda X: estimator.predict(X))
+                )
+
+                # Evite le background dégénéré (1 seule ligne)
+                if isinstance(X_shap, pd.DataFrame):
+                    bg = pd.concat([X_shap] * 50, ignore_index=True)
+                else:
+                    bg = np.repeat(np.asarray(X_shap), repeats=50, axis=0)
+
+                explainer = shap.Explainer(predict_fn, bg)
+            except Exception as exc:
+                return _shap_error_table(f"SHAP explainer init failed: {exc}")
+
+            cache[key] = explainer
+            app.state.shap_explainer_cache = cache
+
+        try:
+            import shap
+            explanation = explainer(X_shap)
+            values = _extract_shap_values(explanation.values)
+        except Exception as exc:
+            return _shap_error_table(f"SHAP failed: {exc}")
 
     shap_row = values[0]
     if isinstance(X_shap, pd.DataFrame):
@@ -121,8 +228,10 @@ def _compute_shap_top_features(record: dict[str, Any], top_k: int = 10) -> pd.Da
     rows = [
         {
             "feature": str(feature_names[idx]),
-            "value": float(feature_values[idx]),
-            "shap_value": float(shap_row[idx]),
+            "raw_value": _clean_raw_value(
+                _lookup_raw_value(str(feature_names[idx]), raw_reference, preprocessor)
+            ),
+            "shap_value": float(np.round(shap_row[idx], 6)),
         }
         for idx in top_idx
     ]
@@ -133,8 +242,7 @@ def score_minimal(
     sk_id_curr: float,
     amt_credit: float,
     duration_months: float,
-    threshold: float,
-) -> tuple[float | None, str, float | None, pd.DataFrame, dict[str, Any]]:
+) -> tuple[float | None, str, pd.DataFrame, dict[str, Any]]:
     _ensure_startup()
     try:
         payload = MinimalPredictionRequest(
@@ -143,7 +251,7 @@ def score_minimal(
             duration_months=int(duration_months),
         )
         record = _build_minimal_record(payload, app.state.preprocessor)
-        response = predict_minimal(payload, threshold=float(threshold), x_client_source="gradio")
+        response = predict_minimal(payload, threshold=None, x_client_source="gradio")
         result = response["predictions"][0]
         probability = float(result.get("probability", 0.0))
         pred_value = int(result.get("prediction", 0))
@@ -156,11 +264,11 @@ def score_minimal(
                 "DURATION_MONTHS": int(duration_months),
             }
         )
-        return probability, label, float(response.get("threshold", 0.0)), shap_table, snapshot
+        return probability, label, shap_table, snapshot
     except HTTPException as exc:
-        return None, f"Erreur: {exc.detail}", None, _shap_error_table("No SHAP available."), {"error": exc.detail}
+        return None, f"Erreur: {exc.detail}", _shap_error_table("No SHAP available."), {"error": exc.detail}
     except Exception as exc:  # pragma: no cover - UI fallback
-        return None, f"Erreur: {exc}", None, _shap_error_table("No SHAP available."), {"error": str(exc)}
+        return None, f"Erreur: {exc}", _shap_error_table("No SHAP available."), {"error": str(exc)}
 
 
 with gr.Blocks(title="Credit scoring MLOps") as demo:
@@ -183,19 +291,17 @@ with gr.Blocks(title="Credit scoring MLOps") as demo:
         sk_id_curr = gr.Number(label="Identifiant client", precision=0, value=100001)
         amt_credit = gr.Number(label="Montant du crédit", value=200000)
         duration_months = gr.Number(label="Durée (mois)", precision=0, value=60)
-        threshold = gr.Slider(label="Seuil", minimum=0.0, maximum=1.0, value=0.5, step=0.01)
 
     run_btn = gr.Button("Scorer")
 
     with gr.Row():
         probability = gr.Number(label="Probabilité de défaut")
         prediction = gr.Textbox(label="Prédiction")
-        threshold_used = gr.Number(label="Seuil utilisé")
 
     shap_table = gr.Dataframe(
-        headers=["feature", "value", "shap_value"],
+        headers=["feature", "raw_value", "shap_value"],
         label="Top 10 SHAP (local)",
-        datatype=["str", "number", "number"],
+        datatype=["str", "str", "number"],
         interactive=False,
     )
 
@@ -203,8 +309,8 @@ with gr.Blocks(title="Credit scoring MLOps") as demo:
 
     run_btn.click(
         score_minimal,
-        inputs=[sk_id_curr, amt_credit, duration_months, threshold],
-        outputs=[probability, prediction, threshold_used, shap_table, snapshot],
+        inputs=[sk_id_curr, amt_credit, duration_months],
+        outputs=[probability, prediction, shap_table, snapshot],
     )
 
 

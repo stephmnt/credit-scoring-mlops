@@ -1,0 +1,22 @@
+exploration:
+  SAMPLE_DATA: False
+  SAMPLE_FRACTION: 0.01
+
+compare_tuning:
+  DATA_PATH: data/data_final.parquet
+  ARTIFACTS_PATH: artifacts/preprocessor.joblib
+  REPORT_PATH: reports/best_model.json
+  SEED: 42
+  SAMPLE_SIZE: 50000
+  TEST_SIZE: 0.2
+  CV_SPLITS: 5
+  N_JOBS: 1
+  TUNING_TRIALS: 30
+  LOG_ARTIFACTS: true
+  EXPERIMENT_NAME: Model-Compare-Tuning
+  SELECTION_RULE: 0.7*f1_best + 0.3*pr_auc
+
+modelisation:
+  RUN_LEGACY_PREPROCESSING: true
+  RUN_FULL_BENCHMARK: true
+  RUN_MLFLOW_LOGGING: true
