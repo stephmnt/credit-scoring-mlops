@@ -5,8 +5,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
-from evidently.report import Report
-from evidently.metric_preset import DataDriftPreset
+from evidently import Report
 
 # On peut réutiliser les fonctions de normalisation si elles sont dans un module partagé
 # Pour cet exemple, je les recopie ici pour la clarté.
