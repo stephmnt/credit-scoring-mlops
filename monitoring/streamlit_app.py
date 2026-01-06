@@ -9,6 +9,10 @@ import streamlit as st
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import streamlit.components.v1 as components
+
+from monitoring.drift_report import generate_report, generate_evidently_report, _load_logs
+
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -136,6 +140,37 @@ if st.button("Generate drift report"):
             "`python -m streamlit run monitoring/streamlit_app.py`."
         )
         st.exception(exc)
+
+if st.button("Generate drift report"):
+    try:
+        if drift_engine == "Evidently":
+            report_path = generate_evidently_report(
+                reference_path=reference_path,
+                log_path=log_path,
+                output_dir=output_dir,
+                sample_size=int(sample_size),
+            )
+        else:
+            report_path = generate_report(
+                log_path=log_path,
+                reference_path=reference_path,
+                output_dir=output_dir,
+                sample_size=int(sample_size),
+                psi_threshold=float(psi_threshold),
+                score_bins=int(score_bins),
+                min_prod_samples=int(min_prod_samples),
+                psi_eps=float(psi_eps),
+                min_category_share=float(min_category_share),
+                fdr_alpha=float(fdr_alpha),
+                min_drift_features=int(min_drift_features),
+                prod_since=prod_since or None,
+                prod_until=prod_until or None,
+            )
+        st.success(f"Generated: {report_path}")
+    except Exception as exc:
+        st.error(str(exc))
+        st.exception(exc)
+
 
 report_file = output_dir / "drift_report.html"
 if report_file.exists():

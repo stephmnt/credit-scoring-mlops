@@ -6,6 +6,9 @@ from pathlib import Path
 
 import pandas as pd
 from evidently import Report
+from evidently.metric_preset import DataDriftPreset
+
+
 
 # On peut réutiliser les fonctions de normalisation si elles sont dans un module partagé
 # Pour cet exemple, je les recopie ici pour la clarté.
@@ -109,3 +112,62 @@ if __name__ == "__main__":
         output_path=args.output_path,
         sample_size=args.sample_size,
     )
+
+def _load_prod_inputs_for_evidently(log_path: Path) -> pd.DataFrame:
+    inputs_df, meta_df = _load_logs(log_path)  # <-- réutilise ton parseur existant
+    if meta_df.empty:
+        return pd.DataFrame()
+    ok = meta_df.get("status_code", pd.Series(dtype=int)).fillna(0) < 400
+    return inputs_df.loc[ok].copy() if not inputs_df.empty else pd.DataFrame()
+
+def generate_evidently_report(
+    reference_path: Path,
+    log_path: Path,
+    output_dir: Path,
+    sample_size: int = 50000,
+    output_name: str = "evidently_drift_report.html",
+) -> Path:
+    # 1) Load reference
+    ref = pd.read_parquet(reference_path)
+    if sample_size > 0 and len(ref) > sample_size:
+        ref = ref.sample(sample_size, random_state=42)
+
+    # 2) Load prod (inputs) depuis logs
+    cur = _load_prod_inputs_for_evidently(log_path)
+    if cur.empty:
+        raise ValueError("No valid production inputs found in logs (status_code < 400).")
+
+    # 3) Pré-traitements minimalistes identiques des deux côtés (si tu en as besoin)
+    # (garde tes helpers si tu veux: sentinel, normalisation genre, etc.)
+    # ref = _replace_sentinel(ref); cur = _replace_sentinel(cur)
+    # ...
+
+    # 4) Aligner les colonnes communes
+    common = sorted(set(ref.columns).intersection(cur.columns))
+    if not common:
+        raise ValueError("No common columns between reference and production data.")
+    ref = ref[common]
+    cur = cur[common]
+
+    # 5) Evidently report
+    report = Report(metrics=[
+        DataDriftPreset(),
+        DataQualityPreset(),
+    ])
+
+    run_result = report.run(reference_data=ref, current_data=cur)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out = output_dir / output_name
+
+    # Compat versions Evidently :
+    # - certaines versions: report.save_html(...)
+    # - d'autres: run_result.save_html(...)
+    if hasattr(run_result, "save_html"):
+        run_result.save_html(str(out))
+    elif hasattr(report, "save_html"):
+        report.save_html(str(out))
+    else:
+        raise RuntimeError("Evidently save_html not available on this version.")
+
+    return out
