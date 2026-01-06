@@ -59,6 +59,24 @@ jobs:
           model_path = candidates[0]
           
           api = HfApi()
+          existing = api.list_repo_files(
+              repo_id=repo_id,
+              repo_type=repo_type,
+              token=token,
+          )
+          to_delete = [
+              name
+              for name in existing
+              if name.endswith("_final_model.pkl") and name != model_path.name
+          ]
+          for name in to_delete:
+              api.delete_file(
+                  path_in_repo=name,
+                  repo_id=repo_id,
+                  repo_type=repo_type,
+                  token=token,
+                  commit_message=f"Remove {name}",
+              )
           for path in [model_path]:
               api.upload_file(
                   path_or_fileobj=str(path),
