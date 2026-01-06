@@ -33,7 +33,6 @@ distro==1.9.0
 docker==7.1.0
 dulwich==0.24.10
 dynaconf==3.2.12
-evidently==0.7.18
 executing==2.2.1
 Faker==40.1.0
 fastapi==0.121.0
@@ -88,7 +87,6 @@ jupyterlab_widgets==3.0.16
 keyring==25.7.0
 kiwisolver==1.4.9
 lightgbm==4.6.0
-litestar==2.19.0
 litestar-htmx==0.5.0
 llvmlite==0.46.0
 lxml==6.0.2

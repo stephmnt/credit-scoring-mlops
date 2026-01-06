@@ -11,7 +11,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import streamlit.components.v1 as components
 
-from monitoring.drift_report import generate_report, generate_evidently_report, _load_logs
+from drift_report import generate_report, generate_evidently_report, _load_logs
 
 
 ROOT = Path(__file__).resolve().parents[1]

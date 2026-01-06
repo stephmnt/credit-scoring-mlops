@@ -5,8 +5,9 @@ import json
 from pathlib import Path
 
 import pandas as pd
-from evidently import Report
-from evidently.metric_preset import DataDriftPreset
+#from evidently.report import Report
+#from evidently.metric_preset import DataDriftPreset, DataQualityPreset  # DataQualityPreset optionnel
+
 
 
 
