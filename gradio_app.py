@@ -296,10 +296,9 @@ with gr.Blocks(title="Credit scoring MLOps") as demo:
     gr.HTML(
         """
         <p>Renseignez l'identifiant client, le montant du crédit et la durée.</p>
-        <p>Le modèle prédit la probabilité de défaut de paiement ainsi que la prédiction binaire associée.</p>
-        <p>Le tableau SHAP affiche les 10 features les plus influentes pour cette prédiction.</p>
-        <p>Le snapshot client affiche quelques informations de référence sur le client.</p>
+        <p>Le modèle prédit la probabilité de défaut de paiement ainsi que la prédiction binaire associée. Le tableau SHAP affiche les 10 features les plus influentes pour cette prédiction. Le snapshot client affiche quelques informations de référence sur le client.</p>
         <p>Pour accéder au data drift monitoring et aux rapports, rendez-vous sur l'application Streamlit dédiée.</p>
+        <p> Le dataset est disponible sur <a href="https://huggingface.co/datasets/stephmnt/assets-credit-scoring-mlops" rel="noreferrer">Hugging Face</a>.</p>
         """
     )
 

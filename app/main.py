@@ -237,20 +237,22 @@ def _ensure_hf_asset(
         return local_path
     if not repo_id:
         return None
-    try:
-        from huggingface_hub import hf_hub_download
-    except ImportError as exc:  # pragma: no cover - optional dependency
-        raise RuntimeError("huggingface_hub is required to download remote assets.") from exc
+
+    from huggingface_hub import hf_hub_download
+
+    token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN")
+
     local_path.parent.mkdir(parents=True, exist_ok=True)
     return Path(
         hf_hub_download(
             repo_id=repo_id,
             filename=filename,
             repo_type=repo_type,
+            token=token,                 # ✅ essentiel pour repo gated
             local_dir=str(local_path.parent),
-            local_dir_use_symlinks=False,
         )
     )
+
 
 
 def _normalize_inputs(
