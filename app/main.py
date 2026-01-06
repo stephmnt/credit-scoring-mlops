@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import logging
 import os
 import pickle
@@ -8,6 +9,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import threading
 import time
 from typing import Any
 import uuid
@@ -16,6 +18,7 @@ from collections import deque
 import numpy as np
 import pandas as pd
 from fastapi import FastAPI, Header, HTTPException, Query, Response
+from huggingface_hub import HfApi
 from pydantic import BaseModel
 from sklearn.preprocessing import MinMaxScaler
 import joblib
@@ -77,6 +80,19 @@ HF_PREPROCESSOR_FILENAME = os.getenv("HF_PREPROCESSOR_FILENAME", ARTIFACTS_PATH.
 HF_CUSTOMER_REPO_ID = os.getenv("HF_CUSTOMER_REPO_ID")
 HF_CUSTOMER_REPO_TYPE = os.getenv("HF_CUSTOMER_REPO_TYPE", "dataset")
 HF_CUSTOMER_FILENAME = os.getenv("HF_CUSTOMER_FILENAME", CUSTOMER_DATA_PATH.name)
+
+HF_LOG_ENABLED = os.getenv("HF_LOG_ENABLED", "1") == "1"
+HF_LOG_DATASET_REPO = os.getenv("HF_LOG_DATASET_REPO")
+HF_LOG_PATH_PREFIX = os.getenv("HF_LOG_PATH_PREFIX", "prod_logs")
+
+HF_LOG_BUFFER_MAX = int(os.getenv("HF_LOG_BUFFER_MAX", "50"))
+HF_LOG_FLUSH_SECONDS = int(os.getenv("HF_LOG_FLUSH_SECONDS", "60"))
+
+_hf_api = HfApi(token=os.getenv("HF_TOKEN")) if os.getenv("HF_TOKEN") else None
+_hf_lock = threading.Lock()
+_hf_buffer: list[dict[str, Any]] = []
+_hf_last_flush = 0.0
+_hf_flusher_started = False
 
 IGNORE_FEATURES = ["is_train", "is_test", "TARGET", "SK_ID_CURR"]
 ENGINEERED_FEATURES = [
@@ -216,6 +232,87 @@ def _json_fallback(obj: Any) -> Any:
 
 def _hash_value(value: Any) -> str:
     return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+
+
+def _utc_day() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _utc_stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%H%M%S")
+
+
+def _start_hf_flusher_if_needed() -> None:
+    global _hf_flusher_started
+    if _hf_flusher_started:
+        return
+    _hf_flusher_started = True
+
+    def _loop() -> None:
+        while True:
+            time.sleep(HF_LOG_FLUSH_SECONDS)
+            with _hf_lock:
+                _flush_hf_locked(force=True)
+
+    threading.Thread(target=_loop, daemon=True).start()
+
+
+def _upload_parquet_part(df: pd.DataFrame) -> None:
+    if not (HF_LOG_ENABLED and _hf_api and HF_LOG_DATASET_REPO):
+        return
+
+    part_path = (
+        f"{HF_LOG_PATH_PREFIX}/date={_utc_day()}/"
+        f"part-{_utc_stamp()}-{uuid.uuid4().hex}.parquet"
+    )
+
+    bio = io.BytesIO()
+    df.to_parquet(bio, index=False)
+
+    for attempt in range(3):
+        try:
+            bio.seek(0)
+            _hf_api.upload_file(
+                path_or_fileobj=bio,
+                path_in_repo=part_path,
+                repo_id=HF_LOG_DATASET_REPO,
+                repo_type="dataset",
+                commit_message=f"Add inference logs {_utc_day()}",
+            )
+            return
+        except Exception:
+            if attempt == 2:
+                raise
+            time.sleep(1.5 * (attempt + 1))
+
+
+def _flush_hf_locked(force: bool = False) -> None:
+    global _hf_buffer, _hf_last_flush
+    if not _hf_buffer:
+        return
+
+    now = time.time()
+    if not force:
+        if len(_hf_buffer) < HF_LOG_BUFFER_MAX and (now - _hf_last_flush) < HF_LOG_FLUSH_SECONDS:
+            return
+
+    df = pd.DataFrame(_hf_buffer)
+    _hf_buffer = []
+    _hf_last_flush = now
+
+    try:
+        _upload_parquet_part(df)
+    except Exception as exc:
+        logger.warning("HF log upload failed: %s", exc)
+
+
+def hf_log_rows(rows: list[dict[str, Any]]) -> None:
+    if not (HF_LOG_ENABLED and _hf_api and HF_LOG_DATASET_REPO):
+        return
+    _start_hf_flusher_if_needed()
+    with _hf_lock:
+        _hf_buffer.extend(rows)
+        _flush_hf_locked(force=False)
 
 
 def _normalize_category_value(value: object, mapping: dict[str, str]) -> object:
@@ -470,10 +567,38 @@ def _log_prediction_entries(
                     "prediction": result.get("prediction"),
                 }
             )
-        if error:
-            entry["error"] = error
-        entries.append(entry)
+    if error:
+        entry["error"] = error
+    entries.append(entry)
     _append_log_entries(entries)
+
+    flat_rows: list[dict[str, Any]] = []
+    for entry in entries:
+        row = {
+            "timestamp_utc": entry.get("timestamp"),
+            "request_id": entry.get("request_id"),
+            "endpoint": entry.get("endpoint"),
+            "source": entry.get("source"),
+            "status_code": entry.get("status_code"),
+            "latency_ms": entry.get("latency_ms"),
+            "model_version": entry.get("model_version"),
+            "threshold": entry.get("threshold"),
+            "sk_id_curr": entry.get("sk_id_curr"),
+            "probability": entry.get("probability"),
+            "prediction": entry.get("prediction"),
+            "error": entry.get("error"),
+        }
+        inputs = entry.get("inputs") or {}
+        for key, value in inputs.items():
+            row[f"input__{key}"] = value
+
+        dq = entry.get("data_quality") or {}
+        for key, value in dq.items():
+            row[f"dq__{key}"] = value
+
+        flat_rows.append(row)
+
+    hf_log_rows(flat_rows)
 
 
 def build_preprocessor(data_path: Path) -> PreprocessorArtifacts:

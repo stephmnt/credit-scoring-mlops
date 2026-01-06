@@ -21,20 +21,10 @@ from app.main import (
     _normalize_inputs,
 )
 
-import io
-import os
-import threading
-import time
-import uuid
-from datetime import datetime, timezone
-
-from huggingface_hub import HfApi
-
 
 def _ensure_startup() -> None:
     if not getattr(app.state, "preprocessor", None):
         startup_event()
-    _start_log_flusher_if_needed()
 
 
 def _customer_snapshot(sk_id_curr: int) -> dict[str, Any]:
@@ -326,114 +316,6 @@ with gr.Blocks(title="Credit scoring MLOps") as demo:
         inputs=[sk_id_curr, amt_credit, duration_months],
         outputs=[probability, prediction, shap_table, snapshot],
     )
-
-# =========================
-# HF Dataset logging (Parquet parts)
-# =========================
-
-LOG_ENABLED = os.getenv("LOG_ENABLED", "1") == "1"
-LOG_DATASET_REPO = os.getenv("LOG_DATASET_REPO", "stephmnt/assets-credit-scoring-mlops")
-LOG_PATH_PREFIX = os.getenv("LOG_PATH_PREFIX", "prod_logs")
-HF_TOKEN = os.getenv("HF_TOKEN")  # Secret HF (write) sur le Space inference
-
-LOG_BUFFER_MAX = int(os.getenv("LOG_BUFFER_MAX", "50"))       # flush dès 50 lignes
-LOG_FLUSH_SECONDS = int(os.getenv("LOG_FLUSH_SECONDS", "60")) # flush au moins toutes les 60s
-
-_hf_api = HfApi(token=HF_TOKEN) if HF_TOKEN else None
-_log_lock = threading.Lock()
-_log_buffer: list[dict] = []
-_last_flush_ts = 0.0
-_flusher_started = False
-
-
-def _now_utc_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _upload_parquet_part(df: pd.DataFrame) -> None:
-    if _hf_api is None:
-        return  # pas de token => pas de write
-    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    stamp = datetime.now(timezone.utc).strftime("%H%M%S")
-    part = f"{LOG_PATH_PREFIX}/date={day}/part-{stamp}-{uuid.uuid4().hex}.parquet"
-
-    bio = io.BytesIO()
-    df.to_parquet(bio, index=False)
-    bio.seek(0)
-
-    _hf_api.upload_file(
-        path_or_fileobj=bio,
-        path_in_repo=part,
-        repo_id=LOG_DATASET_REPO,
-        repo_type="dataset",
-        commit_message=f"Add inference logs {day}",
-    )
-
-
-def _flush_logs_locked(force: bool = False) -> None:
-    global _log_buffer, _last_flush_ts
-    if not _log_buffer:
-        return
-
-    now = time.time()
-    if not force:
-        if len(_log_buffer) < LOG_BUFFER_MAX and (now - _last_flush_ts) < LOG_FLUSH_SECONDS:
-            return
-
-    df = pd.DataFrame(_log_buffer)
-    _log_buffer = []
-    _last_flush_ts = now
-
-    try:
-        _upload_parquet_part(df)
-    except Exception:
-        # En prod tu peux logger ça en stderr / structlog etc.
-        # On évite de faire échouer l'inférence.
-        pass
-
-
-def _start_log_flusher_if_needed() -> None:
-    global _flusher_started
-    if _flusher_started:
-        return
-    _flusher_started = True
-
-    def _loop():
-        while True:
-            time.sleep(LOG_FLUSH_SECONDS)
-            with _log_lock:
-                _flush_logs_locked(force=True)
-
-    t = threading.Thread(target=_loop, daemon=True)
-    t.start()
-
-
-def log_inference_row(row: dict) -> None:
-    if not LOG_ENABLED or _hf_api is None:
-        return
-    with _log_lock:
-        _log_buffer.append(row)
-        _flush_logs_locked(force=False)
-
-        # --- Logging (Evidently-friendly) ---
-        row = {
-            "timestamp_utc": _now_utc_iso(),
-            "model_version": MODEL_VERSION,
-            "source": "gradio",
-            "sk_id_curr": int(sk_id_curr), # pyright: ignore[reportArgumentType]
-            "amt_credit_requested": float(amt_credit), # pyright: ignore[reportArgumentType]
-            "duration_months": int(duration_months), # pyright: ignore[reportArgumentType]
-            "probability": float(probability), # pyright: ignore[reportArgumentType]
-            "prediction": int(pred_value),  # type: ignore
-        }
-        # Ajouter quelques features "business" utiles au drift (cat + num)
-        for k, v in snapshot.items():  # type: ignore
-            if k == "SK_ID_CURR":
-                continue
-            row[f"cust__{k}"] = v
-
-        log_inference_row(row)
-
 
 if __name__ == "__main__":
     _ensure_startup()
