@@ -297,8 +297,7 @@ with gr.Blocks(title="Credit scoring MLOps") as demo:
         """
         <p>Renseignez l'identifiant client, le montant du crédit et la durée.</p>
         <p>Le modèle prédit la probabilité de défaut de paiement ainsi que la prédiction binaire associée. Le tableau SHAP affiche les 10 features les plus influentes pour cette prédiction. Le snapshot client affiche quelques informations de référence sur le client.</p>
-        <p>Pour accéder au data drift monitoring et aux rapports, rendez-vous sur l'application Streamlit dédiée.</p>
-        <p> Le dataset est disponible sur <a href="https://huggingface.co/datasets/stephmnt/assets-credit-scoring-mlops" rel="noreferrer">Hugging Face</a>.</p>
+        <p>Pour accéder au data drift monitoring et aux rapports, rendez-vous sur l'application Streamlit dédiée. Le dataset est disponible sur <a href="https://huggingface.co/datasets/stephmnt/assets-credit-scoring-mlops" rel="noreferrer">Hugging Face</a>.</p>
         """
     )
 
@@ -421,15 +420,14 @@ def log_inference_row(row: dict) -> None:
             "timestamp_utc": _now_utc_iso(),
             "model_version": MODEL_VERSION,
             "source": "gradio",
-            "sk_id_curr": int(sk_id_curr),
-            "amt_credit_requested": float(amt_credit),
-            "duration_months": int(duration_months),
-            "probability": float(probability),
-            "prediction": int(pred_value),
+            "sk_id_curr": int(sk_id_curr), # pyright: ignore[reportArgumentType]
+            "amt_credit_requested": float(amt_credit), # pyright: ignore[reportArgumentType]
+            "duration_months": int(duration_months), # pyright: ignore[reportArgumentType]
+            "probability": float(probability), # pyright: ignore[reportArgumentType]
+            "prediction": int(pred_value),  # type: ignore
         }
-        # Ajoute quelques features "business" utiles au drift (cat + num)
-        # (tu peux en ajouter plus si tu veux)
-        for k, v in snapshot.items():
+        # Ajouter quelques features "business" utiles au drift (cat + num)
+        for k, v in snapshot.items():  # type: ignore
             if k == "SK_ID_CURR":
                 continue
             row[f"cust__{k}"] = v
