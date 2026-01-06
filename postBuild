@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -e
+
+# Remove the conflicting "multipart" distribution so python-multipart provides the package.
+python -m pip uninstall -y multipart || true

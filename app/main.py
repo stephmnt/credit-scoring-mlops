@@ -219,7 +219,7 @@ def _hash_value(value: Any) -> str:
 
 
 def _normalize_category_value(value: object, mapping: dict[str, str]) -> object:
-    if pd.isna(value):
+    if pd.isna(value): # type: ignore
         return np.nan
     key = str(value).strip().upper()
     if not key:
@@ -265,12 +265,12 @@ def _normalize_inputs(
     unknown_masks: dict[str, pd.Series] = {}
     if "CODE_GENDER" in df.columns:
         raw = df["CODE_GENDER"]
-        normalized = raw.apply(lambda v: _normalize_category_value(v, CODE_GENDER_MAPPING))
+        normalized = raw.apply(lambda v: _normalize_category_value(v, CODE_GENDER_MAPPING)) # type: ignore
         unknown_masks["CODE_GENDER"] = normalized.eq("Unknown") & raw.notna()
         df["CODE_GENDER"] = normalized
     if "FLAG_OWN_CAR" in df.columns:
         raw = df["FLAG_OWN_CAR"]
-        normalized = raw.apply(lambda v: _normalize_category_value(v, FLAG_OWN_CAR_MAPPING))
+        normalized = raw.apply(lambda v: _normalize_category_value(v, FLAG_OWN_CAR_MAPPING)) # type: ignore
         unknown_masks["FLAG_OWN_CAR"] = normalized.eq("Unknown") & raw.notna()
         df["FLAG_OWN_CAR"] = normalized
 
@@ -404,7 +404,7 @@ def _build_minimal_record(
         )
     if "AMT_GOODS_PRICE" in record:
         record["AMT_GOODS_PRICE"] = float(payload.amt_credit)
-    return record
+    return record # type: ignore
 
 
 def _append_log_entries(entries: list[dict[str, Any]]) -> None:
@@ -1576,7 +1576,7 @@ def _predict_records(
             latency_ms = (time.perf_counter() - start_time) * 1000.0
             _log_prediction_entries(
                 request_id=request_id,
-                records=log_records,
+                records=log_records, # type: ignore
                 results=results,
                 latency_ms=latency_ms,
                 threshold=use_threshold,
@@ -1598,7 +1598,7 @@ def _predict_records(
         latency_ms = (time.perf_counter() - start_time) * 1000.0
         _log_prediction_entries(
             request_id=request_id,
-            records=log_records,
+            records=log_records, # type: ignore
             results=results,
             latency_ms=latency_ms,
             threshold=None,
@@ -1613,7 +1613,7 @@ def _predict_records(
         detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
         _log_prediction_entries(
             request_id=request_id,
-            records=log_records if "log_records" in locals() else records,
+            records=log_records if "log_records" in locals() else records, # type: ignore
             results=None,
             latency_ms=latency_ms,
             threshold=threshold,
@@ -1628,7 +1628,7 @@ def _predict_records(
         latency_ms = (time.perf_counter() - start_time) * 1000.0
         _log_prediction_entries(
             request_id=request_id,
-            records=log_records if "log_records" in locals() else records,
+            records=log_records if "log_records" in locals() else records, # type: ignore
             results=None,
             latency_ms=latency_ms,
             threshold=threshold,
