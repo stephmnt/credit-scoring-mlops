@@ -293,13 +293,19 @@ with gr.Blocks(title="Credit scoring MLOps") as demo:
             </a>
         </div>
         """)
-    gr.Markdown(
-        "Renseignez l'identifiant client, le montant du crédit et la durée. "
+    gr.HTML(
+        """
+        <p>Renseignez l'identifiant client, le montant du crédit et la durée.</p>
+        <p>Le modèle prédit la probabilité de défaut de paiement ainsi que la prédiction binaire associée.</p>
+        <p>Le tableau SHAP affiche les 10 features les plus influentes pour cette prédiction.</p>
+        <p>Le snapshot client affiche quelques informations de référence sur le client.</p>
+        <p>Pour accéder au data drift monitoring et aux rapports, rendez-vous sur l'application Streamlit dédiée.</p>
+        """
     )
 
     with gr.Row():
         sk_id_curr = gr.Number(label="Identifiant client", precision=0, value=100001)
-        amt_credit = gr.Number(label="Montant du crédit", value=200000)
+        amt_credit = gr.Number(label="Montant du crédit", value=2000000)
         duration_months = gr.Number(label="Durée (mois)", precision=0, value=60)
 
     run_btn = gr.Button("Scorer")
