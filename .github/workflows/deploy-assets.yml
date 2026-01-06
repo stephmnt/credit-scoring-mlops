@@ -11,6 +11,10 @@ on:
         description: "HF repo type (dataset or model)"
         required: true
         default: "dataset"
+  push:
+    branches: ["main"]
+    paths:
+      - "data/*_final_model.pkl"
 
 jobs:
   upload-assets:
@@ -34,8 +38,8 @@ jobs:
       - name: Upload assets to Hugging Face Hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_REPO_ID: ${{ inputs.repo_id }}
-          HF_REPO_TYPE: ${{ inputs.repo_type }}
+          HF_REPO_ID: ${{ inputs.repo_id || 'stephmnt/assets-credit-scoring-mlops' }}
+          HF_REPO_TYPE: ${{ inputs.repo_type || 'dataset' }}
         run: |
           python - <<'PY'
           import os
