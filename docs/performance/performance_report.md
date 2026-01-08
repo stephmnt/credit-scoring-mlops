@@ -6,11 +6,10 @@ Mesurer la latence d'inference, identifier les goulots d'etranglement et propose
 
 ## Setup
 
-- Script (archivé): `dev_archive/profiling/profile_inference.py`
-- Workflow courant: notebook modélisation (section TODO 5)
+- Notebook: `notebooks/P6_MANET_Stephane_notebook_modélisation.ipynb` (section TODO 5)
 - Donnees: `data/data_final.parquet` (echantillon)
 - Parametres: `--sample-size 500 --batch-size 100 --runs 2`
-- Modele: `HistGB_final_model.pkl`
+- Modele: `data/*_final_model.pkl` (ex: `data/xgb_final_model.pkl`)
 
 Les resultats sont sauvegardes dans:
 
@@ -21,21 +20,21 @@ Les resultats sont sauvegardes dans:
 
 | Scenario | Batch | Mean (ms) | P50 (ms) | P95 (ms) | Throughput (rows/s) |
 | --- | --- | ---:| ---:| ---:| ---:|
-| optimized_preprocess | 100 | 187.37 | 169.96 | 271.41 | 533.71 |
-| legacy_preprocess_alignment | 100 | 273.05 | 264.45 | 357.41 | 366.23 |
+| optimized_preprocess | 100 | 35.73 | 33.77 | 43.09 | 2798.44 |
+| legacy_preprocess_alignment | 100 | 47.57 | 47.19 | 51.23 | 2102.36 |
 
-Gain observe (moyenne): ~31% de reduction de latence par batch sur le chemin optimise.
+Gain observe (moyenne): ~25% de reduction de latence par batch sur le chemin optimise.
 
 ## Goulots d'etranglement (cProfile)
 
 Extrait `docs/performance/profile_summary.txt`:
 
-- `app.main:preprocess_input` represente l'essentiel du temps cumule (~0.90s sur 1.05s).
+- `app.main:preprocess_input` represente l'essentiel du temps cumule (voir `docs/performance/profile_summary.txt`).
 - Operations pandas dominantes:
   - `DataFrame.__setitem__` / `insert`
   - `fillna`, `to_numeric`
   - `get_dummies`
-- `HistGradientBoostingClassifier.predict_proba` est present mais non majoritaire (~0.15s).
+- `predict_proba` est present mais non majoritaire.
 
 ## Optimisation appliquee
 
