@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import gradio as gr
@@ -20,6 +21,79 @@ from app.main import (
     _build_minimal_record,
     _normalize_inputs,
 )
+
+_DESCRIPTION_PATH = Path("data/HomeCredit_columns_description.csv")
+_FEATURE_DESC_CACHE: dict[str, str] | None = None
+_FEATURE_DESC_KEYS: list[str] | None = None
+
+
+def _load_feature_descriptions() -> dict[str, str]:
+    global _FEATURE_DESC_CACHE, _FEATURE_DESC_KEYS
+    if _FEATURE_DESC_CACHE is not None:
+        return _FEATURE_DESC_CACHE
+    if not _DESCRIPTION_PATH.exists():
+        _FEATURE_DESC_CACHE = {}
+        _FEATURE_DESC_KEYS = []
+        return _FEATURE_DESC_CACHE
+    try:
+        df = pd.read_csv(_DESCRIPTION_PATH, encoding="latin1")
+    except Exception:
+        try:
+            df = pd.read_csv(_DESCRIPTION_PATH)
+        except Exception:
+            _FEATURE_DESC_CACHE = {}
+            _FEATURE_DESC_KEYS = []
+            return _FEATURE_DESC_CACHE
+    if "Row" not in df.columns or "Description" not in df.columns:
+        _FEATURE_DESC_CACHE = {}
+        _FEATURE_DESC_KEYS = []
+        return _FEATURE_DESC_CACHE
+    mapping: dict[str, str] = {}
+    for row, desc in df[["Row", "Description"]].dropna().itertuples(index=False):
+        key = str(row).strip()
+        if not key or key in mapping:
+            continue
+        mapping[key] = str(desc).strip()
+    _FEATURE_DESC_CACHE = mapping
+    _FEATURE_DESC_KEYS = sorted(mapping.keys(), key=len, reverse=True)
+    return _FEATURE_DESC_CACHE
+
+
+def _describe_feature_name(feature_name: str, desc_map: dict[str, str]) -> str:
+    if not desc_map:
+        return feature_name
+    cleaned = _strip_feature_prefix(feature_name)
+    direct = desc_map.get(cleaned)
+    if direct:
+        return direct
+    for prefix, label in (("is_missing_", "Missing indicator for"), ("is_outlier_", "Outlier indicator for")):
+        if cleaned.startswith(prefix):
+            base = cleaned[len(prefix):]
+            base_desc = desc_map.get(base, base)
+            return f"{label} {base_desc}"
+    parts = cleaned.split("__")
+    base_key = None
+    for part in parts:
+        if part in desc_map and (base_key is None or len(part) > len(base_key)):
+            base_key = part
+    if base_key:
+        desc = desc_map[base_key]
+        try:
+            idx = parts.index(base_key)
+        except ValueError:
+            idx = -1
+        suffix_parts = parts[idx + 1:] if idx >= 0 else []
+        if suffix_parts:
+            suffix = " ".join(suffix_parts)
+            return f"{desc} ({suffix})"
+        return desc
+    keys = _FEATURE_DESC_KEYS or list(desc_map.keys())
+    for key in keys:
+        if cleaned.startswith(key + "_"):
+            suffix = cleaned[len(key) + 1:]
+            desc = desc_map[key]
+            return f"{desc} ({suffix})" if suffix else desc
+    return cleaned
 
 
 def _ensure_startup() -> None:
@@ -224,14 +298,15 @@ def _compute_shap_top_features(record: dict[str, Any], top_k: int = 10) -> pd.Da
     else:
         feature_values = np.asarray(X_shap)[0]
         feature_names = [f"feature_{idx}" for idx in range(len(feature_values))]
+    desc_map = _load_feature_descriptions()
     top_idx = np.argsort(np.abs(shap_row))[::-1][:top_k]
     rows = [
         {
-            "feature": str(feature_names[idx]),
+            "feature": _describe_feature_name(str(feature_names[idx]), desc_map),
             "raw_value": _clean_raw_value(
                 _lookup_raw_value(str(feature_names[idx]), raw_reference, preprocessor)
             ),
-            "shap_value": float(np.round(shap_row[idx], 6)),
+            "shap_value": float(np.round(shap_row[idx], 2)),
         }
         for idx in top_idx
     ]
@@ -253,7 +328,7 @@ def score_minimal(
         record = _build_minimal_record(payload, app.state.preprocessor)
         response = predict_minimal(payload, threshold=None, x_client_source="gradio")
         result = response["predictions"][0]
-        probability = float(result.get("probability", 0.0))
+        probability = float(np.round(result.get("probability", 0.0), 2))
         pred_value = int(result.get("prediction", 0))
         label = "Default (1)" if pred_value == 1 else "No default (0)"
         shap_table = _compute_shap_top_features(record, top_k=10)
