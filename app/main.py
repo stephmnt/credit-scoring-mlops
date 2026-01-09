@@ -363,6 +363,30 @@ def _is_lfs_pointer(path: Path) -> bool:
     return text.startswith("version https://git-lfs.github.com/spec/v1")
 
 
+def _ensure_hf_asset_candidates(
+    local_dir: Path,
+    repo_id: str | None,
+    repo_type: str,
+    filenames: list[str],
+) -> Path | None:
+    if not repo_id:
+        return None
+    seen: set[str] = set()
+    for filename in filenames:
+        if not filename or filename in seen:
+            continue
+        seen.add(filename)
+        candidate_path = local_dir / filename
+        try:
+            downloaded = _ensure_hf_asset(candidate_path, repo_id, filename, repo_type)
+        except Exception as exc:
+            logger.warning("HF asset download failed for %s: %s", filename, exc)
+            downloaded = None
+        if downloaded is not None and not _is_lfs_pointer(downloaded):
+            return downloaded
+    return None
+
+
 
 def _normalize_inputs(
     df_raw: pd.DataFrame,
@@ -1500,11 +1524,17 @@ def startup_event() -> None:
         return
     model_path = MODEL_PATH
     if not model_path.exists() or _is_lfs_pointer(model_path):
-        downloaded = _ensure_hf_asset(
-            model_path,
-            HF_MODEL_REPO_ID,
+        candidate_names = [
             HF_MODEL_FILENAME,
+            "xgb_final_model.pkl",
+            "lgbm_final_model.pkl",
+            "histgb_final_model.pkl",
+        ]
+        downloaded = _ensure_hf_asset_candidates(
+            model_path.parent,
+            HF_MODEL_REPO_ID,
             HF_MODEL_REPO_TYPE,
+            candidate_names,
         )
         if downloaded is not None:
             model_path = downloaded
@@ -1515,6 +1545,8 @@ def startup_event() -> None:
         else:
             raise RuntimeError(f"Model file not found: {model_path}")
     else:
+        global MODEL_VERSION
+        MODEL_VERSION = model_path.name
         logger.info("Loading model from %s", model_path)
         try:
             app.state.model = load_model(model_path)
