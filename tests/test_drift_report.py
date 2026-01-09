@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from monitoring.drift_report_old import generate_report
+from monitoring.drift_report import generate_report
 
 
 def _write_jsonl(path: Path, entries: list[dict]) -> None:

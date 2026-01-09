@@ -11,8 +11,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ app/
 COPY app_entry.py app.py gradio_app.py ./
 COPY src/ src/
-COPY data/ data/
-COPY artifacts/ artifacts/
 
 EXPOSE 7860
 

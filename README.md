@@ -381,7 +381,7 @@ python monitoring/drift_report.py \
   --logs logs/predictions.jsonl \
   --reference data/data_final.parquet \
   --output-dir reports \
-  --min-prod-samples 200 \
+  --min-prod-samples 50 \
   --fdr-alpha 0.05 \
   --prod-since "2024-01-01T00:00:00Z" \
   --prod-until "2024-01-31T23:59:59Z"
@@ -391,7 +391,7 @@ Le rapport HTML est généré dans `reports/drift_report.html` (avec des plots d
 `reports/plots/`). Sur Hugging Face, le disque est éphemère : télécharger les logs
 avant d'analyser.
 
-Le drift est calcule uniquement si `n_prod >= --min-prod-samples` (defaut 200).
+Le drift est calcule uniquement si `n_prod >= --min-prod-samples` (defaut 50).
 Sinon, un badge "Sample insuffisant" est affiche et les alertes sont desactivees.
 
 Robustesse integree:
@@ -418,20 +418,16 @@ Captures (snapshot local du reporting + stockage):
 
 ## Profiling & Optimisation (Etape 4)
 
-Profiling et benchmark d'inference (cProfile + latence) :
+Profiling et benchmark d'inference (cProfile + latence):
 
-- Desormais via le notebook modélisation (section TODO 5).
-- L'ancien script est archive dans `dev_archive/profiling/profile_inference.py`.
-
-Sorties:
-
-- `docs/performance/benchmark_results.json`
-- `docs/performance/profile_summary.txt`
-- Rapport detaille: `docs/performance/performance_report.md`
+- Notebook: `notebooks/P6_MANET_Stephane_notebook_modélisation.ipynb` (section TODO 5).
+- Resultats: `docs/performance/benchmark_results.json`, `docs/performance/profile_summary.txt`, `docs/performance/performance_report.md`.
 
 Dashboard local Streamlit (monitoring + drift):
 
 ```shell
+streamlit run monitoring/streamlit_app.py
+# ou
 python -m streamlit run monitoring/streamlit_app.py
 ```
 
@@ -452,21 +448,3 @@ python -m streamlit run monitoring/streamlit_app.py
 - **CI/CD** : tests avec couverture (`pytest-cov`), build Docker et deploy vers Hugging Face Spaces.
 
 ![Screenshot MLFlow](https://raw.githubusercontent.com/stephmnt/credit-scoring-mlops/main/screen-mlflow.png)
-
-### Manques prioritaires
-
-* Mission 2 Étape 4 non couverte: pas de profiling/optimisation post‑déploiement ni rapport de gains, à livrer avec une version optimisée.
-
-### Preuves / doc à compléter
-
-* Lien explicite vers le dépôt public + stratégie de versions/branches à ajouter dans README.md.
-* Preuve de model registry/serving MLflow à conserver (capture UI registry ou commande de serving) en plus de screen-mlflow.png.
-* Dataset de référence non versionné (data_final.parquet est ignoré), documenter l’obtention pour exécuter drift_report.py.
-* Badge GitHub Actions pointe vers OCR_Projet05 dans README.md, corriger l’URL.
-* RGPD/PII: LOG_HASH_SK_ID est désactivé par défaut dans main.py, préciser l’activation en prod dans README.md.
-
-### Améliorations recommandées
-
-* Compléter les tests API: /logs (auth OK/KO), batch predict, param threshold, SK_ID_CURR manquant, outliers dans test_api.py.
-* Simplifier le fallback ALLOW_MISSING_ARTIFACTS et DummyModel si les artefacts sont versionnés (nettoyer main.py et conftest.py).
-* Si l’évaluateur attend une stratégie de branches, créer une branche feature et fusionner pour preuve.
