@@ -117,6 +117,12 @@ ENGINEERED_SOURCES = [
     "AMT_ANNUITY",
 ]
 FEATURE_SELECTION_CATEGORICAL_INPUTS = ["CODE_GENDER", "FLAG_OWN_CAR"]
+# Allow out-of-range values for these features (dev behavior).
+ALLOW_OUT_OF_RANGE_COLUMNS = {
+    "EXT_SOURCE_1",
+    "EXT_SOURCE_2",
+    "EXT_SOURCE_3",
+}
 # Dev experiment: replace NaNs by 0 for selected inputs.
 ZERO_IMPUTE_FEATURES = {
     "EXT_SOURCE_3",
@@ -1358,11 +1364,23 @@ def _validate_numeric_ranges(df: pd.DataFrame, numeric_ranges: dict[str, tuple[f
         if mask.any() and ((values[mask] < min_val) | (values[mask] > max_val)).any():
             out_of_range.append(col)
     if out_of_range:
-        logger.warning(
-            "Ignoring out-of-range inputs for columns: %s",
-            out_of_range[:25],
+        ignored = [col for col in out_of_range if col in ALLOW_OUT_OF_RANGE_COLUMNS]
+        invalid = [col for col in out_of_range if col not in ALLOW_OUT_OF_RANGE_COLUMNS]
+        if ignored:
+            logger.warning(
+                "Ignoring out-of-range inputs for columns: %s",
+                ignored[:25],
+            )
+        if not invalid:
+            return
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Input contains values outside expected ranges.",
+                "out_of_range_columns": invalid[:25],
+                "out_of_range_count": len(invalid),
+            },
         )
-        return
 
 
 def _apply_correlated_imputation(df: pd.DataFrame, artifacts: PreprocessorArtifacts) -> None:

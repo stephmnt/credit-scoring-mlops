@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.main import ALLOW_OUT_OF_RANGE_COLUMNS, app
 
 
 @pytest.fixture(scope="session")
@@ -31,9 +31,10 @@ def _pick_required_column(preprocessor, exclude=None):
     raise AssertionError("No required column available for test.")
 
 
-def _pick_numeric_range(preprocessor):
+def _pick_numeric_range(preprocessor, exclude=None):
+    exclude = set(exclude or [])
     for col, bounds in preprocessor.numeric_ranges.items():
-        if col in preprocessor.numeric_required_columns:
+        if col in preprocessor.numeric_required_columns and col not in exclude:
             return col, bounds
     raise AssertionError("No numeric range available for test.")
 
@@ -102,12 +103,32 @@ def test_predict_invalid_type(client):
 def test_predict_out_of_range(client):
     preprocessor = client.app.state.preprocessor
     payload = _build_payload(preprocessor)
-    col, (min_val, max_val) = _pick_numeric_range(preprocessor)
+    col, (min_val, max_val) = _pick_numeric_range(
+        preprocessor,
+        exclude=ALLOW_OUT_OF_RANGE_COLUMNS,
+    )
     payload["data"][col] = max_val + 1
     resp = client.post("/predict", json=payload)
     assert resp.status_code == 422
     detail = resp.json().get("detail", {})
     assert detail.get("message") == "Input contains values outside expected ranges."
+
+
+def test_predict_out_of_range_allowed_ext_source(client):
+    preprocessor = client.app.state.preprocessor
+    payload = _build_payload(preprocessor)
+    allowed = [
+        col
+        for col in ALLOW_OUT_OF_RANGE_COLUMNS
+        if col in preprocessor.numeric_ranges
+    ]
+    if not allowed:
+        pytest.skip("No EXT_SOURCE ranges available for test.")
+    col = allowed[0]
+    _, max_val = preprocessor.numeric_ranges[col]
+    payload["data"][col] = max_val + 1
+    resp = client.post("/predict", json=payload)
+    assert resp.status_code == 200
 
 
 def test_predict_normalizes_categoricals(client):
