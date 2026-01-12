@@ -117,6 +117,19 @@ ENGINEERED_SOURCES = [
     "AMT_ANNUITY",
 ]
 FEATURE_SELECTION_CATEGORICAL_INPUTS = ["CODE_GENDER", "FLAG_OWN_CAR"]
+# Dev experiment: replace NaNs by 0 for selected inputs.
+ZERO_IMPUTE_FEATURES = {
+    "EXT_SOURCE_3",
+    "EXT_SOURCE_1",
+    "b_DAYS_CREDIT",
+    "b_DAYS_CREDIT_UPDATE",
+    "RECENT12__b__CREDIT_ACTIVE__Active__sum",
+    "b__CREDIT_ACTIVE__Closed__mean",
+}
+ZERO_IMPUTE_PATTERNS = (
+    "b__DAYS_CREDIT__",
+    "b__DAYS_CREDIT_UPDATE__",
+)
 # Default reduced inputs (fallback when correlation-based selection is unavailable).
 DEFAULT_REDUCED_INPUT_FEATURES = [
     "SK_ID_CURR",
@@ -1345,14 +1358,11 @@ def _validate_numeric_ranges(df: pd.DataFrame, numeric_ranges: dict[str, tuple[f
         if mask.any() and ((values[mask] < min_val) | (values[mask] > max_val)).any():
             out_of_range.append(col)
     if out_of_range:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "message": "Input contains values outside expected ranges.",
-                "out_of_range_columns": out_of_range[:25],
-                "out_of_range_count": len(out_of_range),
-            },
+        logger.warning(
+            "Ignoring out-of-range inputs for columns: %s",
+            out_of_range[:25],
         )
+        return
 
 
 def _apply_correlated_imputation(df: pd.DataFrame, artifacts: PreprocessorArtifacts) -> None:
@@ -1377,6 +1387,20 @@ def _apply_correlated_imputation(df: pd.DataFrame, artifacts: PreprocessorArtifa
             df.loc[missing, col] = df.loc[missing, col].clip(min_val, max_val)
 
 
+def _impute_zero_for_features(df: pd.DataFrame) -> None:
+    targets = []
+    for col in df.columns:
+        if col in ZERO_IMPUTE_FEATURES:
+            targets.append(col)
+            continue
+        if any(pattern in col for pattern in ZERO_IMPUTE_PATTERNS):
+            targets.append(col)
+    if not targets:
+        return
+    for col in set(targets):
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+
 def preprocess_input(df_raw: pd.DataFrame, artifacts: PreprocessorArtifacts) -> pd.DataFrame:
     df = df_raw.copy()
 
@@ -1384,6 +1408,7 @@ def preprocess_input(df_raw: pd.DataFrame, artifacts: PreprocessorArtifacts) -> 
         if col not in df.columns:
             df[col] = np.nan
 
+    _impute_zero_for_features(df)
     allow_missing = {"DAYS_EMPLOYED"}
     _ensure_required_columns(df, artifacts.required_input_columns, allow_missing=allow_missing)
     _validate_numeric_inputs(df, artifacts.numeric_required_columns)
@@ -1418,6 +1443,7 @@ def preprocess_input(df_raw: pd.DataFrame, artifacts: PreprocessorArtifacts) -> 
     )
     df = apply_outlier_clipping(df, outlier_bounds)
 
+    _impute_zero_for_features(df)
     _apply_correlated_imputation(df, artifacts)
 
     for col, median in artifacts.numeric_medians.items():
@@ -1455,6 +1481,7 @@ def _prepare_pipeline_input(
         if col not in df.columns:
             df[col] = np.nan
 
+    _impute_zero_for_features(df)
     allow_missing = {"DAYS_EMPLOYED"}
     _ensure_required_columns(df, artifacts.required_input_columns, allow_missing=allow_missing)
     _validate_numeric_inputs(df, artifacts.numeric_required_columns)
@@ -1491,6 +1518,8 @@ def _prepare_pipeline_input(
         upper_q=OUTLIER_UPPER_Q,
     )
     df = apply_outlier_clipping(df, outlier_bounds)
+
+    _impute_zero_for_features(df)
 
     if "CODE_GENDER" in df.columns and (df["CODE_GENDER"] == "XNA").any():
         raise HTTPException(

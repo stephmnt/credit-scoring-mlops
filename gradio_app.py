@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+# 
 from pathlib import Path
 from typing import Any
 
@@ -122,9 +122,10 @@ def _shap_error_table(message: str) -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
-                "feature": message,
-                "raw_value": np.nan,
-                "shap_value": np.nan,
+                "Nom": message,
+                "Description": "",
+                "Valeur": np.nan,
+                "Impact sur la prédiction (SHAP)": np.nan,
             }
         ]
     )
@@ -144,9 +145,29 @@ def _extract_shap_values(shap_values: Any) -> np.ndarray:
 def _clean_raw_value(value: Any) -> Any:
     if value is None or pd.isna(value):
         return None
-    if isinstance(value, (np.integer, np.floating)):
+    if isinstance(value, np.integer):
         return value.item()
+    if isinstance(value, (np.floating, float)):
+        return round(float(value), 2)
     return value
+
+
+def _format_raw_value(value: Any) -> str | None:
+    cleaned = _clean_raw_value(value)
+    if cleaned is None:
+        return None
+    if isinstance(cleaned, float):
+        text = f"{cleaned:.2f}"
+        return text.rstrip("0").rstrip(".")
+    return str(cleaned)
+
+
+def _format_probability_percent(probability: float | None) -> str | None:
+    if probability is None:
+        return None
+    percent = round(probability * 100, 2)
+    text = f"{percent:.2f}".rstrip("0").rstrip(".")
+    return f"{text} %"
 
 
 def _strip_feature_prefix(feature_name: str) -> str:
@@ -300,16 +321,19 @@ def _compute_shap_top_features(record: dict[str, Any], top_k: int = 10) -> pd.Da
         feature_names = [f"feature_{idx}" for idx in range(len(feature_values))]
     desc_map = _load_feature_descriptions()
     top_idx = np.argsort(np.abs(shap_row))[::-1][:top_k]
-    rows = [
-        {
-            "feature": _describe_feature_name(str(feature_names[idx]), desc_map),
-            "raw_value": _clean_raw_value(
-                _lookup_raw_value(str(feature_names[idx]), raw_reference, preprocessor)
-            ),
-            "shap_value": float(np.round(shap_row[idx], 2)),
-        }
-        for idx in top_idx
-    ]
+    rows = []
+    for idx in top_idx:
+        raw_name = str(feature_names[idx])
+        rows.append(
+            {
+                "Nom": _strip_feature_prefix(raw_name),
+                "Description": _describe_feature_name(raw_name, desc_map),
+                "Valeur": _format_raw_value(
+                    _lookup_raw_value(raw_name, raw_reference, preprocessor)
+                ),
+                "Impact sur la prédiction (SHAP)": float(np.round(shap_row[idx], 2)),
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -317,7 +341,7 @@ def score_minimal(
     sk_id_curr: float,
     amt_credit: float,
     duration_months: float,
-) -> tuple[float | None, str, pd.DataFrame, dict[str, Any]]:
+) -> tuple[str | None, str, pd.DataFrame, dict[str, Any]]:
     _ensure_startup()
     try:
         payload = MinimalPredictionRequest(
@@ -329,6 +353,7 @@ def score_minimal(
         response = predict_minimal(payload, threshold=None, x_client_source="gradio")
         result = response["predictions"][0]
         probability = float(np.round(result.get("probability", 0.0), 2))
+        probability_text = _format_probability_percent(probability)
         pred_value = int(result.get("prediction", 0))
         label = "Default (1)" if pred_value == 1 else "No default (0)"
         shap_table = _compute_shap_top_features(record, top_k=10)
@@ -339,7 +364,7 @@ def score_minimal(
                 "DURATION_MONTHS": int(duration_months),
             }
         )
-        return probability, label, shap_table, snapshot
+        return probability_text, label, shap_table, snapshot
     except HTTPException as exc:
         return None, f"Erreur: {exc.detail}", _shap_error_table("No SHAP available."), {"error": exc.detail}
     except Exception as exc:  # pragma: no cover - UI fallback
@@ -368,19 +393,19 @@ with gr.Blocks(title="Credit scoring MLOps") as demo:
 
     with gr.Row():
         sk_id_curr = gr.Number(label="Identifiant client", precision=0, value=100001)
-        amt_credit = gr.Number(label="Montant du crédit", value=2000000)
+        amt_credit = gr.Number(label="Montant du crédit", value=200000)
         duration_months = gr.Number(label="Durée (mois)", precision=0, value=60)
 
     run_btn = gr.Button("Scorer")
 
     with gr.Row():
-        probability = gr.Number(label="Probabilité de défaut")
+        probability = gr.Textbox(label="Probabilité de défaut")
         prediction = gr.Textbox(label="Prédiction")
 
     shap_table = gr.Dataframe(
-        headers=["feature", "raw_value", "shap_value"],
+        headers=["Nom", "Description", "Valeur", "Impact sur la prédiction (SHAP)"],
         label="Top 10 SHAP (local)",
-        datatype=["str", "str", "number"],
+        datatype=["str", "str", "str", "number"],
         interactive=False,
     )
 
