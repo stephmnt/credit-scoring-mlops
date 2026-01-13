@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,13 @@ from scipy import stats
 
 try:
     import matplotlib
-    matplotlib.use("Agg")
+    try:
+        from IPython import get_ipython
+        if get_ipython() is None and os.getenv("MPLBACKEND") is None:
+            matplotlib.use("Agg")
+    except Exception:
+        if os.getenv("MPLBACKEND") is None:
+            matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 except ImportError as exc:  # pragma: no cover - optional plotting dependency
     raise SystemExit(
