@@ -244,7 +244,7 @@ uvicorn app.main:app --reload --port 7860
 Lancer l'UI Gradio + API (chemin `/api`) :
 
 ```shell
-uvicorn app_entry:app --reload --port 7860
+uvicorn app:app --reload --port 7860
 ```
 
 Verifier le service (HF) :
